@@ -1,7 +1,27 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+build/
+.vite/
+
+# Environment files
 .env
-venv/
-.venv/
+backend/.env
+
+# Database
+backend/data/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
