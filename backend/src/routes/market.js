@@ -8,6 +8,28 @@ const router = express.Router();
 // Valid timeframes supported by getMockCandles
 const VALID_TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1D', '1d'];
 
+// GET /api/market/search?q=term
+// Alias kept for the frontend search box.
+router.get('/search', authMiddleware, (req, res) => {
+  const term = String(req.query.q || '').trim().toLowerCase();
+  const results = getAllAssets()
+    .filter(info =>
+      !term ||
+      info.symbol.toLowerCase().includes(term) ||
+      info.name.toLowerCase().includes(term)
+    )
+    .slice(0, 10)
+    .map(info => ({
+      symbol: info.symbol,
+      name: info.name,
+      category: info.category,
+      exchange: info.category,
+      price: getCurrentPrice(info.symbol),
+      source: 'mock',
+    }));
+  res.json({ results, source: 'mock', warning: 'Synthetic demo prices only.' });
+});
+
 // ------------------------------------------------------------------ GET /assets
 // Returns all 20 symbols from assetInfo with current price from mockData.
 router.get('/assets', authMiddleware, (req, res, next) => {

@@ -95,7 +95,24 @@ router.get('/top', authMiddleware, (req, res, next) => {
     const { limit = '10', timeframe = '1h' } = req.query;
     const n = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
 
-    const signals = getCachedSignals(timeframe).slice(0, n);
+    const signals = getCachedSignals(timeframe).slice(0, n).map((item) => {
+      const label = item.signal || 'Wait';
+      const signal = label.toLowerCase().includes('buy')
+        ? 'BUY'
+        : label.toLowerCase().includes('sell')
+          ? 'SELL'
+          : 'NEUTRAL';
+      return {
+        ...item,
+        signalLabel: label,
+        signal,
+        entry: item.entryZone
+          ? `${item.entryZone.low}–${item.entryZone.high}`
+          : null,
+        tp: item.takeProfits?.[0] || null,
+        sl: item.stopLoss,
+      };
+    });
 
     res.json({
       signals,

@@ -3,6 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const { getDb } = require('../db/database');
 const authMiddleware = require('../middleware/auth');
 const { getAssetInfo } = require('../data/assetInfo');
+const { calculateMaxDailyLoss } = require('../engine/riskCalculator');
 
 const router = express.Router();
 
@@ -34,16 +35,21 @@ function applySlippage(price, tradeType, asset) {
   }
 }
 
+function calculatePriceRisk(asset, entryPrice, stopPrice, lots) {
+  const distanceInPips = Math.abs(entryPrice - stopPrice) / asset.pipSize;
+  return distanceInPips * asset.pipValue * lots;
+}
+
 function calculatePnL(trade, exitPrice) {
   const qty = trade.quantity; // lots
   const entry = trade.entry_price;
+  const asset = getAssetInfo(trade.symbol);
 
-  let pnl;
-  if (trade.tradeType === 'BUY') {
-    pnl = (exitPrice - entry) * qty;
-  } else {
-    pnl = (entry - exitPrice) * qty;
-  }
+  const distanceInPips = Math.abs(exitPrice - entry) / (asset?.pipSize || 1);
+  const grossPnl = distanceInPips * (asset?.pipValue || 1) * qty;
+  let pnl = trade.tradeType === 'BUY'
+    ? (exitPrice >= entry ? grossPnl : -grossPnl)
+    : (exitPrice <= entry ? grossPnl : -grossPnl);
 
   // Subtract both sides commission (open + close)
   const positionValue = entry * qty;
@@ -215,8 +221,8 @@ router.post('/', authMiddleware, (req, res, next) => {
   try {
     const { symbol, tradeType, quantity, entry_price, stop_loss, take_profit, notes, strategy_id } = req.body;
 
-    if (!symbol || !tradeType || !quantity || !entry_price) {
-      return res.status(400).json({ error: 'symbol, tradeType, quantity, and entry_price are required' });
+    if (!symbol || !tradeType || !quantity || !entry_price || !stop_loss) {
+      return res.status(400).json({ error: 'symbol, tradeType, quantity, entry_price, and stop_loss are required' });
     }
 
     const normalizedSymbol = symbol.toUpperCase().trim();
@@ -243,6 +249,16 @@ router.post('/', authMiddleware, (req, res, next) => {
     if (isNaN(rawEntryPrice) || rawEntryPrice <= 0) {
       return res.status(400).json({ error: 'entry_price must be a positive number' });
     }
+    const stopLoss = parseFloat(stop_loss);
+    if (isNaN(stopLoss) || stopLoss <= 0) {
+      return res.status(400).json({ error: 'stop_loss must be a positive number' });
+    }
+    if (normalizedType === 'BUY' && stopLoss >= rawEntryPrice) {
+      return res.status(400).json({ error: 'BUY stop_loss must be below entry_price' });
+    }
+    if (normalizedType === 'SELL' && stopLoss <= rawEntryPrice) {
+      return res.status(400).json({ error: 'SELL stop_loss must be above entry_price' });
+    }
 
     // Apply 1–3 pip slippage
     const filledPrice = applySlippage(rawEntryPrice, normalizedType, asset);
@@ -255,6 +271,25 @@ router.post('/', authMiddleware, (req, res, next) => {
 
     // Deduct commission from account balance
     const currentBalance = getAccountBalance(db, req.user.userId);
+    const plannedRisk = calculatePriceRisk(asset, filledPrice, stopLoss, lotSize);
+    const plannedRiskPercent = (plannedRisk / currentBalance) * 100;
+    if (plannedRiskPercent > 2) {
+      return res.status(422).json({
+        error: 'Trade rejected by risk policy',
+        details: [`Planned stop loss equals ${plannedRiskPercent.toFixed(2)}% of equity; the maximum is 2%.`],
+      });
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const todaysClosedTrades = db.get('paper_trades')
+      .filter({ user_id: req.user.userId })
+      .value()
+      .filter(trade => trade.status === 'closed' && String(trade.closed_at || '').startsWith(today));
+    const dailyRisk = calculateMaxDailyLoss(currentBalance, todaysClosedTrades);
+    if (dailyRisk.shouldStopTrading) {
+      return res.status(422).json({ error: 'Daily loss limit reached', details: [dailyRisk.recommendation] });
+    }
+
     if (currentBalance < commission) {
       return res.status(400).json({ error: 'Insufficient balance to cover commission' });
     }
@@ -273,7 +308,7 @@ router.post('/', authMiddleware, (req, res, next) => {
       entry_price: filledPrice,
       requested_price: rawEntryPrice,
       exit_price: null,
-      stop_loss: stop_loss ? parseFloat(stop_loss) : null,
+      stop_loss: stopLoss,
       take_profit: take_profit ? parseFloat(take_profit) : null,
       commission,
       closeCommission: null,
@@ -289,7 +324,15 @@ router.post('/', authMiddleware, (req, res, next) => {
 
     db.get('paper_trades').push(newTrade).write();
 
-    res.status(201).json({ trade: newTrade });
+    res.status(201).json({
+      trade: newTrade,
+      risk: {
+        amount: parseFloat(plannedRisk.toFixed(2)),
+        percent: parseFloat(plannedRiskPercent.toFixed(2)),
+        maxPerTradePercent: 2,
+        maxDailyLossPercent: 5,
+      },
+    });
   } catch (err) {
     next(err);
   }

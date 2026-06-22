@@ -89,7 +89,7 @@ export default function Sidebar() {
         {!sidebarCollapsed && (
           <div className="flex flex-col min-w-0">
             <span className="text-sm font-semibold text-text-primary leading-none truncate">
-              TradingDash
+              Market Signal
             </span>
             <span className="text-xs text-text-muted leading-none mt-0.5">
               {paperMode ? (

@@ -32,6 +32,8 @@ api.interceptors.response.use(
     const message =
       error.response?.data?.detail ||
       error.response?.data?.message ||
+      error.response?.data?.error ||
+      (Array.isArray(error.response?.data?.details) ? error.response.data.details.join(' ') : null) ||
       error.message ||
       'An unexpected error occurred'
     if (error.response?.status === 401) {

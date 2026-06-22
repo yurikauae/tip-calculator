@@ -1,335 +1,665 @@
-﻿import { useState, useCallback } from "react";
-import { Bell, Plus, Download, RotateCcw, Trash2 } from "lucide-react";
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  Bell,
+  Plus,
+  Trash2,
+  RotateCcw,
+  Download,
+  TrendingUp,
+  Activity,
+  CheckCircle,
+  XCircle,
+  PauseCircle,
+  AlertTriangle,
+  ChevronDown,
+} from 'lucide-react';
 
-const CONDITIONS = ["above", "below", "crosses", "between"];
-const NOTIFY_TYPES = ["In-App", "Email", "Browser Push"];
-const SYMBOLS = ["EUR/USD", "GBP/USD", "USD/JPY", "BTC/USD", "ETH/USD", "AAPL", "TSLA", "SPY", "GOLD", "OIL"];
+const STORAGE_KEY = 'msi_alerts';
+const HISTORY_KEY = 'msi_alerts_history';
 
-const MOCK_PRICES = {
-  "EUR/USD": 1.0842, "GBP/USD": 1.2715, "USD/JPY": 157.34, "BTC/USD": 67850,
-  "ETH/USD": 3412, "AAPL": 213.5, "TSLA": 178.2, "SPY": 531.8, "GOLD": 2345, "OIL": 79.4,
+const CONDITIONS = ['Above', 'Below', 'Crosses', 'Between'];
+
+const generateId = () => `alert_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+const defaultForm = {
+  symbol: '',
+  condition: 'Above',
+  price: '',
+  price2: '',
+  label: '',
+  active: true,
 };
 
-const INITIAL_ALERTS = [
-  { id: 1, symbol: "BTC/USD", condition: "above", price: "70000", price2: "", notify: "In-App", enabled: true, triggered: false, triggeredAt: null, triggeredPrice: null, created: "2024-12-01" },
-  { id: 2, symbol: "EUR/USD", condition: "below", price: "1.0800", price2: "", notify: "Email", enabled: true, triggered: false, triggeredAt: null, triggeredPrice: null, created: "2024-12-03" },
-  { id: 3, symbol: "AAPL", condition: "crosses", price: "200.00", price2: "", notify: "Browser Push", enabled: false, triggered: false, triggeredAt: null, triggeredPrice: null, created: "2024-12-05" },
-];
+const loadFromStorage = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+};
 
-const INITIAL_HISTORY = [
-  { id: 1, symbol: "GOLD", condition: "above", price: "2100", triggeredAt: "2024-12-10 14:32", triggeredPrice: 2108.5, notify: "In-App", accuracy: "correct" },
-  { id: 2, symbol: "ETH/USD", condition: "below", price: "3200", triggeredAt: "2024-12-09 09:15", triggeredPrice: 3185.2, notify: "Email", accuracy: "correct" },
-  { id: 3, symbol: "BTC/USD", condition: "crosses", price: "65000", triggeredAt: "2024-12-08 18:44", triggeredPrice: 65120, notify: "In-App", accuracy: "neutral" },
-  { id: 4, symbol: "USD/JPY", condition: "above", price: "155.00", triggeredAt: "2024-12-07 06:22", triggeredPrice: 155.82, notify: "Browser Push", accuracy: "incorrect" },
-];
+const saveToStorage = (key, value) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+};
 
-function conditionColor(c) {
-  if (c === "above" || c === "crosses") return "text-[#00d4aa]";
-  if (c === "below") return "text-[#ff4757]";
-  return "text-yellow-400";
-}
+// Simulated last prices per symbol (module-level so interval keeps state)
+const lastPrices = {};
 
-function accuracyBadge(acc) {
-  if (acc === "correct") return <span className="text-xs font-bold text-[#00d4aa]">Correct</span>;
-  if (acc === "incorrect") return <span className="text-xs font-bold text-[#ff4757]">Incorrect</span>;
-  return <span className="text-xs text-gray-500">Neutral</span>;
-}
+const simulatePrice = (symbol, referencePrice) => {
+  const base = lastPrices[symbol] !== undefined ? lastPrices[symbol] : referencePrice;
+  const change = base * (Math.random() * 0.02 - 0.01); // ±1%
+  const next = parseFloat((base + change).toFixed(6));
+  lastPrices[symbol] = next;
+  return next;
+};
 
-const INPUT_CLASS = "w-full bg-[#0a0e1a] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-[#00d4aa]/50";
-const LABEL_CLASS = "block text-xs text-gray-400 mb-1.5";
+const conditionMet = (condition, currentPrice, price, price2) => {
+  switch (condition) {
+    case 'Above':
+      return currentPrice > price;
+    case 'Below':
+      return currentPrice < price;
+    case 'Crosses':
+      return Math.abs(currentPrice - price) / price < 0.005;
+    case 'Between':
+      return price2 !== null && currentPrice >= price && currentPrice <= price2;
+    default:
+      return false;
+  }
+};
 
-const Alerts = () => {
-  const [alerts, setAlerts] = useState(INITIAL_ALERTS);
-  const [history, setHistory] = useState(INITIAL_HISTORY);
-  const [symbol, setSymbol] = useState("BTC/USD");
-  const [condition, setCondition] = useState("above");
-  const [price, setPrice] = useState("");
-  const [price2, setPrice2] = useState("");
-  const [notify, setNotify] = useState("In-App");
-  const [success, setSuccess] = useState(false);
-  const [activeTab, setActiveTab] = useState("active");
+const formatTimestamp = (ts) => new Date(ts).toLocaleString();
 
-  const activeCount = alerts.filter((a) => a.enabled && !a.triggered).length;
-  const triggeredCount = alerts.filter((a) => a.triggered).length;
-  const accuracyScore = history.length > 0
-    ? ((history.filter((h) => h.accuracy === "correct").length / history.length) * 100).toFixed(0)
-    : 0;
-
-  const createAlert = useCallback(() => {
-    if (!price) return;
-    if (condition === "between" && !price2) return;
-    const newAlert = {
-      id: Date.now(), symbol, condition, price,
-      price2: condition === "between" ? price2 : "",
-      notify, enabled: true, triggered: false,
-      triggeredAt: null, triggeredPrice: null,
-      created: new Date().toLocaleDateString(),
-    };
-    setAlerts((prev) => [newAlert, ...prev]);
-    setPrice(""); setPrice2("");
-    setSuccess(true);
-    setTimeout(() => setSuccess(false), 3000);
-  }, [symbol, condition, price, price2, notify]);
-
-  const toggleAlert = (id) =>
-    setAlerts((prev) => prev.map((a) => a.id === id ? { ...a, enabled: !a.enabled } : a));
-
-  const deleteAlert = (id) =>
-    setAlerts((prev) => prev.filter((a) => a.id !== id));
-
-  const resetAlert = (id) =>
-    setAlerts((prev) => prev.map((a) => a.id === id
-      ? { ...a, triggered: false, triggeredAt: null, triggeredPrice: null, enabled: true } : a));
-
-  const simulateTrigger = (id) => {
-    const alert = alerts.find((a) => a.id === id);
-    if (!alert) return;
-    const now = new Date().toLocaleString();
-    const mockPrice = MOCK_PRICES[alert.symbol] || parseFloat(alert.price) * 1.005;
-    setAlerts((prev) => prev.map((a) => a.id === id
-      ? { ...a, triggered: true, enabled: false, triggeredAt: now, triggeredPrice: mockPrice } : a));
-    setHistory((prev) => [{
-      id: Date.now(), symbol: alert.symbol, condition: alert.condition, price: alert.price,
-      triggeredAt: now, triggeredPrice: mockPrice, notify: alert.notify, accuracy: "neutral",
-    }, ...prev]);
+const StatusBadge = ({ status }) => {
+  const styles = {
+    Active: 'bg-[#00d4aa]/10 text-[#00d4aa] border border-[#00d4aa]/30',
+    Triggered: 'bg-[#ff4757]/10 text-[#ff4757] border border-[#ff4757]/30',
+    Paused: 'bg-[#ffa502]/10 text-[#ffa502] border border-[#ffa502]/30',
   };
-
-  const exportCSV = () => {
-    const rows = [
-      ["Symbol", "Condition", "Price", "Triggered At", "Triggered Price", "Notify", "Accuracy"],
-      ...history.map((h) => [h.symbol, h.condition, h.price, h.triggeredAt, h.triggeredPrice, h.notify, h.accuracy]),
-    ];
-    const csv = rows.map((r) => r.join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = "alerts_history.csv"; a.click();
-    URL.revokeObjectURL(url);
+  const icons = {
+    Active: <CheckCircle size={11} />,
+    Triggered: <AlertTriangle size={11} />,
+    Paused: <PauseCircle size={11} />,
   };
-
-  const activeAlerts = alerts.filter((a) => !a.triggered);
-  const triggeredAlerts = alerts.filter((a) => a.triggered);
-
   return (
-    <div className="min-h-screen bg-[#0a0e1a] text-gray-100 p-6">
-      <div className="max-w-5xl mx-auto">
-
-        <div className="flex items-start justify-between mb-6 flex-wrap gap-4">
-          <div>
-            <h1 className="text-3xl font-bold text-white mb-1 flex items-center gap-2">
-              <Bell size={26} className="text-[#00d4aa]" /> Price Alerts
-            </h1>
-            <p className="text-gray-400 text-sm">Get notified when prices hit your targets</p>
-          </div>
-          <div className="flex items-center gap-3">
-            {activeCount > 0 && (
-              <div className="bg-[#00d4aa]/20 border border-[#00d4aa]/40 text-[#00d4aa] text-xs font-bold px-3 py-1.5 rounded-full">
-                {activeCount} Active
-              </div>
-            )}
-            {triggeredCount > 0 && (
-              <div className="bg-[#ff4757]/20 border border-[#ff4757]/40 text-[#ff4757] text-xs font-bold px-3 py-1.5 rounded-full">
-                {triggeredCount} Triggered
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-3 gap-4 mb-6">
-          <div className="bg-[#111827] border border-white/5 rounded-xl p-4 text-center">
-            <p className="text-xs text-gray-500 uppercase mb-1">Active Alerts</p>
-            <p className="text-2xl font-bold text-white">{activeCount}</p>
-          </div>
-          <div className="bg-[#111827] border border-white/5 rounded-xl p-4 text-center">
-            <p className="text-xs text-gray-500 uppercase mb-1">History Count</p>
-            <p className="text-2xl font-bold text-white">{history.length}</p>
-          </div>
-          <div className="bg-[#111827] border border-white/5 rounded-xl p-4 text-center">
-            <p className="text-xs text-gray-500 uppercase mb-1">Accuracy Score</p>
-            <p className={`text-2xl font-bold ${+accuracyScore >= 60 ? "text-[#00d4aa]" : "text-[#ff4757]"}`}>{accuracyScore}%</p>
-          </div>
-        </div>
-
-        <div className="bg-[#111827] border border-white/5 rounded-xl p-6 mb-6">
-          <h2 className="text-sm font-semibold text-white mb-4 uppercase tracking-wide flex items-center gap-2">
-            <Plus size={14} className="text-[#00d4aa]" /> Create New Alert
-          </h2>
-          {success && (
-            <div className="bg-[#00d4aa]/10 border border-[#00d4aa]/40 rounded-lg p-3 mb-4 text-[#00d4aa] text-sm">
-              Alert created successfully.
-            </div>
-          )}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
-            <div>
-              <label className={LABEL_CLASS}>Symbol</label>
-              <select value={symbol} onChange={(e) => setSymbol(e.target.value)} className={INPUT_CLASS}>
-                {SYMBOLS.map((s) => <option key={s}>{s}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className={LABEL_CLASS}>Condition</label>
-              <select value={condition} onChange={(e) => setCondition(e.target.value)} className={INPUT_CLASS}>
-                {CONDITIONS.map((c) => <option key={c}>{c}</option>)}
-              </select>
-              <p className="text-xs text-gray-600 mt-1 leading-snug">
-                {condition === "crosses" && "Triggers on price crossing in either direction"}
-                {condition === "between" && "Triggers when price enters the range"}
-                {condition === "above" && "Triggers when price rises above level"}
-                {condition === "below" && "Triggers when price falls below level"}
-              </p>
-            </div>
-            <div>
-              <label className={LABEL_CLASS}>{condition === "between" ? "Range Low" : "Price Level"}</label>
-              <input type="number" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Enter price" className={INPUT_CLASS} />
-            </div>
-            {condition === "between" ? (
-              <div>
-                <label className={LABEL_CLASS}>Range High</label>
-                <input type="number" value={price2} onChange={(e) => setPrice2(e.target.value)} placeholder="Upper bound" className={INPUT_CLASS} />
-              </div>
-            ) : (
-              <div>
-                <label className={LABEL_CLASS}>Notification</label>
-                <select value={notify} onChange={(e) => setNotify(e.target.value)} className={INPUT_CLASS}>
-                  {NOTIFY_TYPES.map((n) => <option key={n}>{n}</option>)}
-                </select>
-              </div>
-            )}
-            <button
-              onClick={createAlert}
-              disabled={!price || (condition === "between" && !price2)}
-              className="bg-[#00d4aa] hover:bg-[#00d4aa]/80 disabled:opacity-40 disabled:cursor-not-allowed text-[#0a0e1a] font-bold py-2.5 px-4 rounded-lg transition-colors text-sm"
-            >
-              + Add Alert
-            </button>
-          </div>
-        </div>
-
-        <div className="flex gap-1 mb-4 bg-[#111827] rounded-xl p-1 border border-white/5 w-fit">
-          {[
-            { key: "active", label: `Active (${activeAlerts.length})` },
-            { key: "triggered", label: `Triggered (${triggeredAlerts.length})` },
-            { key: "history", label: `History (${history.length})` },
-          ].map((tab) => (
-            <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
-                activeTab === tab.key ? "bg-[#00d4aa] text-[#0a0e1a]" : "text-gray-400 hover:text-white"
-              }`}>
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {activeTab === "active" && (
-          <div className="bg-[#111827] border border-white/5 rounded-xl p-6">
-            {activeAlerts.length === 0 ? (
-              <p className="text-gray-500 text-center py-10">No active alerts. Create one above.</p>
-            ) : (
-              <div className="space-y-3">
-                {activeAlerts.map((alert) => (
-                  <div key={alert.id}
-                    className={`flex items-center justify-between p-4 rounded-xl border transition-all ${
-                      alert.enabled ? "bg-[#0a0e1a]/60 border-white/10" : "bg-[#0a0e1a]/30 border-white/5 opacity-60"
-                    }`}>
-                    <div className="flex items-center gap-4 flex-wrap">
-                      <span className="font-bold text-white text-sm">{alert.symbol}</span>
-                      <span className="text-gray-400 text-sm">price</span>
-                      <span className={`font-semibold text-sm ${conditionColor(alert.condition)}`}>{alert.condition}</span>
-                      <span className="text-white font-bold text-sm">{alert.price}{alert.price2 ? ` – ${alert.price2}` : ""}</span>
-                      <span className="text-xs bg-white/5 text-gray-400 px-2 py-0.5 rounded">{alert.notify}</span>
-                      <span className="text-xs text-gray-600">Created {alert.created}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => simulateTrigger(alert.id)} title="Simulate trigger"
-                        className="text-xs text-gray-600 hover:text-yellow-400 border border-white/10 rounded px-2 py-1 transition-colors">
-                        Test
-                      </button>
-                      <button onClick={() => toggleAlert(alert.id)}
-                        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${alert.enabled ? "bg-[#00d4aa]" : "bg-gray-700"}`}>
-                        <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${alert.enabled ? "translate-x-4" : "translate-x-0.5"}`} />
-                      </button>
-                      <button onClick={() => deleteAlert(alert.id)} className="text-gray-600 hover:text-[#ff4757] transition-colors">
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {activeTab === "triggered" && (
-          <div className="bg-[#111827] border border-white/5 rounded-xl p-6">
-            {triggeredAlerts.length === 0 ? (
-              <p className="text-gray-500 text-center py-10">No triggered alerts.</p>
-            ) : (
-              <div className="space-y-3">
-                {triggeredAlerts.map((alert) => (
-                  <div key={alert.id} className="flex items-center justify-between p-4 rounded-xl border border-[#ff4757]/20 bg-[#ff4757]/5">
-                    <div className="flex items-center gap-4 flex-wrap">
-                      <span className="w-2 h-2 rounded-full bg-[#ff4757] flex-shrink-0"></span>
-                      <span className="font-bold text-white text-sm">{alert.symbol}</span>
-                      <span className={`font-semibold text-sm ${conditionColor(alert.condition)}`}>{alert.condition}</span>
-                      <span className="text-white font-bold text-sm">{alert.price}</span>
-                      <div className="text-xs text-gray-400">
-                        Triggered at <span className="text-white">{alert.triggeredAt}</span>
-                        {alert.triggeredPrice && (
-                          <span className="ml-2">Price: <span className="text-[#ff4757]">{Number(alert.triggeredPrice).toLocaleString()}</span></span>
-                        )}
-                        {alert.triggeredPrice && (
-                          <span className="ml-2 text-gray-600">
-                            ({(((Number(alert.triggeredPrice) - Number(alert.price)) / Number(alert.price)) * 100).toFixed(2)}% from level)
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <button onClick={() => resetAlert(alert.id)}
-                      className="flex items-center gap-1 text-xs text-[#00d4aa] border border-[#00d4aa]/30 rounded px-2 py-1 hover:bg-[#00d4aa]/10 transition-colors">
-                      <RotateCcw size={11} /> Reset
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {activeTab === "history" && (
-          <div className="bg-[#111827] border border-white/5 rounded-xl p-6">
-            <div className="flex items-center justify-between mb-4">
-              <p className="text-xs text-gray-500">Accuracy: did price continue in the expected direction after trigger?</p>
-              <button onClick={exportCSV}
-                className="flex items-center gap-1.5 text-xs text-[#00d4aa] border border-[#00d4aa]/30 rounded-lg px-3 py-1.5 hover:bg-[#00d4aa]/10 transition-colors">
-                <Download size={12} /> Export CSV
-              </button>
-            </div>
-            <div className="space-y-2">
-              {history.map((item) => (
-                <div key={item.id} className="flex items-center justify-between py-3 px-4 bg-[#0a0e1a]/60 rounded-lg border border-white/5">
-                  <div className="flex items-center gap-3">
-                    <span className="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0"></span>
-                    <span className="font-medium text-white text-sm">{item.symbol}</span>
-                    <span className={`text-sm ${conditionColor(item.condition)}`}>{item.condition}</span>
-                    <span className="text-[#00d4aa] text-sm font-medium">{item.price}</span>
-                    {item.triggeredPrice && (
-                      <span className="text-xs text-gray-500">to {Number(item.triggeredPrice).toLocaleString()}</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-4 text-xs text-gray-500">
-                    {accuracyBadge(item.accuracy)}
-                    <span>{item.notify}</span>
-                    <span>{item.triggeredAt}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-      </div>
-    </div>
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${styles[status]}`}
+    >
+      {icons[status]}
+      {status}
+    </span>
   );
 };
 
-export default Alerts;
+export default function Alerts() {
+  const [alerts, setAlerts] = useState(() => loadFromStorage(STORAGE_KEY, []));
+  const [history, setHistory] = useState(() => loadFromStorage(HISTORY_KEY, []));
+  const [form, setForm] = useState(defaultForm);
+  const [showForm, setShowForm] = useState(false);
+  const [formError, setFormError] = useState('');
+
+  // Persist to localStorage
+  useEffect(() => { saveToStorage(STORAGE_KEY, alerts); }, [alerts]);
+  useEffect(() => { saveToStorage(HISTORY_KEY, history); }, [history]);
+
+  // Price-checking interval — every 5 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setAlerts((prev) => {
+        const next = prev.map((alert) => {
+          if (!alert.active || alert.triggered) return alert;
+          const ref = parseFloat(alert.price);
+          if (isNaN(ref)) return alert;
+          const current = simulatePrice(alert.symbol, ref);
+          const price2Val =
+            alert.condition === 'Between' ? parseFloat(alert.price2) : null;
+          if (conditionMet(alert.condition, current, ref, price2Val)) {
+            const entry = {
+              id: generateId(),
+              alertId: alert.id,
+              symbol: alert.symbol,
+              condition: alert.condition,
+              price: alert.price,
+              price2: alert.price2 || null,
+              label: alert.label,
+              triggerPrice: current.toFixed(6),
+              timestamp: Date.now(),
+            };
+            // Use functional update for history inside setAlerts callback
+            setHistory((h) => [entry, ...h]);
+            return { ...alert, triggered: true, active: false, lastPrice: current };
+          }
+          return { ...alert, lastPrice: current };
+        });
+        return next;
+      });
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const getStatus = (alert) => {
+    if (alert.triggered) return 'Triggered';
+    if (!alert.active) return 'Paused';
+    return 'Active';
+  };
+
+  const handleFormChange = (field, value) => {
+    setForm((f) => ({ ...f, [field]: value }));
+    setFormError('');
+  };
+
+  const handleAddAlert = () => {
+    if (!form.symbol.trim()) {
+      setFormError('Symbol is required.');
+      return;
+    }
+    if (!form.price || isNaN(parseFloat(form.price))) {
+      setFormError('A valid price is required.');
+      return;
+    }
+    if (
+      form.condition === 'Between' &&
+      (!form.price2 || isNaN(parseFloat(form.price2)))
+    ) {
+      setFormError('A second price is required for the Between condition.');
+      return;
+    }
+    const newAlert = {
+      id: generateId(),
+      symbol: form.symbol.trim().toUpperCase(),
+      condition: form.condition,
+      price: form.price,
+      price2: form.condition === 'Between' ? form.price2 : '',
+      label: form.label.trim(),
+      active: form.active,
+      triggered: false,
+      lastPrice: null,
+      createdAt: Date.now(),
+    };
+    setAlerts((prev) => [newAlert, ...prev]);
+    setForm(defaultForm);
+    setShowForm(false);
+    setFormError('');
+  };
+
+  const handleToggle = useCallback((id) => {
+    setAlerts((prev) =>
+      prev.map((a) =>
+        a.id === id && !a.triggered ? { ...a, active: !a.active } : a
+      )
+    );
+  }, []);
+
+  const handleDelete = useCallback((id) => {
+    setAlerts((prev) => prev.filter((a) => a.id !== id));
+  }, []);
+
+  const handleReset = useCallback((id) => {
+    setAlerts((prev) =>
+      prev.map((a) =>
+        a.id === id
+          ? { ...a, triggered: false, active: true, lastPrice: null }
+          : a
+      )
+    );
+  }, []);
+
+  const stats = useMemo(() => {
+    const total = alerts.length;
+    const active = alerts.filter((a) => a.active && !a.triggered).length;
+    const triggered = alerts.filter((a) => a.triggered).length;
+    return { total, active, triggered };
+  }, [alerts]);
+
+  const exportCSV = () => {
+    if (!history.length) return;
+    const headers = [
+      'Symbol',
+      'Condition',
+      'Target Price',
+      'Price 2',
+      'Label',
+      'Trigger Price',
+      'Timestamp',
+    ];
+    const rows = history.map((h) => [
+      h.symbol,
+      h.condition,
+      h.price,
+      h.price2 || '',
+      h.label || '',
+      h.triggerPrice,
+      formatTimestamp(h.timestamp),
+    ]);
+    const csv = [headers, ...rows]
+      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'alert_history.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#0a0e1a] text-white p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-8 flex-wrap gap-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-lg bg-[#00d4aa]/10 border border-[#00d4aa]/20">
+            <Bell size={22} className="text-[#00d4aa]" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-white">Price Alerts</h1>
+            <p className="text-sm text-gray-400">
+              Monitor price conditions in real time
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={() => {
+            setShowForm((v) => !v);
+            setFormError('');
+          }}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#00d4aa] text-[#0a0e1a] font-semibold text-sm hover:bg-[#00b894] transition-colors"
+        >
+          <Plus size={16} />
+          New Alert
+        </button>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        {[
+          {
+            label: 'Total Alerts',
+            value: stats.total,
+            icon: <Bell size={18} />,
+            color: 'text-blue-400',
+            bg: 'bg-blue-400/10',
+          },
+          {
+            label: 'Active',
+            value: stats.active,
+            icon: <Activity size={18} />,
+            color: 'text-[#00d4aa]',
+            bg: 'bg-[#00d4aa]/10',
+          },
+          {
+            label: 'Triggered',
+            value: stats.triggered,
+            icon: <AlertTriangle size={18} />,
+            color: 'text-[#ff4757]',
+            bg: 'bg-[#ff4757]/10',
+          },
+          {
+            label: 'Accuracy',
+            value: '72%',
+            icon: <TrendingUp size={18} />,
+            color: 'text-[#ffa502]',
+            bg: 'bg-[#ffa502]/10',
+          },
+        ].map((s) => (
+          <div
+            key={s.label}
+            className="bg-[#111827] border border-[#1f2937] rounded-xl p-4 flex items-center gap-4"
+          >
+            <div className={`p-2 rounded-lg ${s.bg} ${s.color}`}>
+              {s.icon}
+            </div>
+            <div>
+              <p className="text-xs text-gray-400">{s.label}</p>
+              <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Create Alert Form */}
+      {showForm && (
+        <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-6 mb-8">
+          <h2 className="text-lg font-semibold mb-5 text-white">
+            Create New Alert
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* Symbol */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Symbol
+              </label>
+              <input
+                type="text"
+                value={form.symbol}
+                onChange={(e) => handleFormChange('symbol', e.target.value)}
+                placeholder="e.g. BTCUSDT"
+                className="w-full bg-[#1a2234] border border-[#1f2937] rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-[#00d4aa] transition-colors"
+              />
+            </div>
+
+            {/* Condition */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Condition
+              </label>
+              <div className="relative">
+                <select
+                  value={form.condition}
+                  onChange={(e) =>
+                    handleFormChange('condition', e.target.value)
+                  }
+                  className="w-full appearance-none bg-[#1a2234] border border-[#1f2937] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-[#00d4aa] transition-colors pr-8"
+                >
+                  {CONDITIONS.map((c) => (
+                    <option key={c}>{c}</option>
+                  ))}
+                </select>
+                <ChevronDown
+                  size={14}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+                />
+              </div>
+            </div>
+
+            {/* Price */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                {form.condition === 'Between' ? 'Lower Price' : 'Price'}
+              </label>
+              <input
+                type="number"
+                value={form.price}
+                onChange={(e) => handleFormChange('price', e.target.value)}
+                placeholder="0.00"
+                className="w-full bg-[#1a2234] border border-[#1f2937] rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-[#00d4aa] transition-colors"
+              />
+            </div>
+
+            {/* Second price for Between */}
+            {form.condition === 'Between' && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Upper Price
+                </label>
+                <input
+                  type="number"
+                  value={form.price2}
+                  onChange={(e) =>
+                    handleFormChange('price2', e.target.value)
+                  }
+                  placeholder="0.00"
+                  className="w-full bg-[#1a2234] border border-[#1f2937] rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-[#00d4aa] transition-colors"
+                />
+              </div>
+            )}
+
+            {/* Notification Label */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Notification Label
+              </label>
+              <input
+                type="text"
+                value={form.label}
+                onChange={(e) => handleFormChange('label', e.target.value)}
+                placeholder="Optional label"
+                className="w-full bg-[#1a2234] border border-[#1f2937] rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-[#00d4aa] transition-colors"
+              />
+            </div>
+
+            {/* Active toggle */}
+            <div className="flex items-end pb-0.5">
+              <label className="flex items-center gap-3 cursor-pointer select-none">
+                <div
+                  onClick={() =>
+                    handleFormChange('active', !form.active)
+                  }
+                  className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer ${
+                    form.active ? 'bg-[#00d4aa]' : 'bg-[#1f2937]'
+                  }`}
+                >
+                  <div
+                    className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                      form.active ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </div>
+                <span className="text-sm text-gray-300">
+                  {form.active ? 'Active on create' : 'Paused on create'}
+                </span>
+              </label>
+            </div>
+          </div>
+
+          {formError && (
+            <p className="mt-3 text-sm text-[#ff4757] flex items-center gap-1">
+              <XCircle size={14} />
+              {formError}
+            </p>
+          )}
+
+          <div className="flex gap-3 mt-5">
+            <button
+              onClick={handleAddAlert}
+              className="px-5 py-2 rounded-lg bg-[#00d4aa] text-[#0a0e1a] font-semibold text-sm hover:bg-[#00b894] transition-colors"
+            >
+              Create Alert
+            </button>
+            <button
+              onClick={() => {
+                setShowForm(false);
+                setFormError('');
+                setForm(defaultForm);
+              }}
+              className="px-5 py-2 rounded-lg border border-[#1f2937] text-gray-300 text-sm hover:border-gray-500 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Alerts List */}
+      <div className="mb-8">
+        <h2 className="text-lg font-semibold mb-4 text-white">Your Alerts</h2>
+        {alerts.length === 0 ? (
+          <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-12 flex flex-col items-center justify-center text-center">
+            <div className="p-4 rounded-full bg-[#1a2234] mb-4">
+              <Bell size={32} className="text-gray-500" />
+            </div>
+            <p className="text-gray-300 font-medium mb-1">No alerts yet</p>
+            <p className="text-sm text-gray-500">
+              Click "New Alert" to set up your first price alert.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {alerts.map((alert) => {
+              const status = getStatus(alert);
+              return (
+                <div
+                  key={alert.id}
+                  className="bg-[#111827] border border-[#1f2937] rounded-xl px-5 py-4 flex flex-col md:flex-row md:items-center gap-4"
+                >
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className="font-bold text-white text-base">
+                        {alert.symbol}
+                      </span>
+                      <StatusBadge status={status} />
+                      {alert.label && (
+                        <span className="text-xs text-gray-400 bg-[#1a2234] px-2 py-0.5 rounded-full border border-[#1f2937]">
+                          {alert.label}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 flex items-center gap-2 flex-wrap text-sm text-gray-400">
+                      <span className="text-gray-500">{alert.condition}</span>
+                      <span className="text-[#00d4aa] font-mono">
+                        ${parseFloat(alert.price).toLocaleString()}
+                      </span>
+                      {alert.condition === 'Between' && alert.price2 && (
+                        <>
+                          <span className="text-gray-500">to</span>
+                          <span className="text-[#00d4aa] font-mono">
+                            ${parseFloat(alert.price2).toLocaleString()}
+                          </span>
+                        </>
+                      )}
+                      {alert.lastPrice !== null && (
+                        <span className="text-gray-600 text-xs ml-1">
+                          sim:{' '}
+                          <span className="text-gray-400">
+                            ${Number(alert.lastPrice).toLocaleString()}
+                          </span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-3 flex-shrink-0">
+                    {/* Toggle active (only when not triggered) */}
+                    {!alert.triggered && (
+                      <label className="flex items-center gap-2 cursor-pointer select-none">
+                        <div
+                          onClick={() => handleToggle(alert.id)}
+                          className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${
+                            alert.active ? 'bg-[#00d4aa]' : 'bg-[#1f2937]'
+                          }`}
+                        >
+                          <div
+                            className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                              alert.active
+                                ? 'translate-x-5'
+                                : 'translate-x-0.5'
+                            }`}
+                          />
+                        </div>
+                        <span className="text-xs text-gray-400">
+                          {alert.active ? 'On' : 'Off'}
+                        </span>
+                      </label>
+                    )}
+
+                    {/* Reset triggered */}
+                    {alert.triggered && (
+                      <button
+                        onClick={() => handleReset(alert.id)}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#ffa502]/10 border border-[#ffa502]/30 text-[#ffa502] text-xs font-medium hover:bg-[#ffa502]/20 transition-colors"
+                      >
+                        <RotateCcw size={13} />
+                        Reset
+                      </button>
+                    )}
+
+                    {/* Delete */}
+                    <button
+                      onClick={() => handleDelete(alert.id)}
+                      className="p-2 rounded-lg text-gray-500 hover:text-[#ff4757] hover:bg-[#ff4757]/10 transition-colors"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Triggered History */}
+      <div>
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+          <h2 className="text-lg font-semibold text-white">
+            Triggered History
+          </h2>
+          {history.length > 0 && (
+            <button
+              onClick={exportCSV}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#1f2937] text-gray-300 text-xs font-medium hover:border-[#00d4aa] hover:text-[#00d4aa] transition-colors"
+            >
+              <Download size={13} />
+              Export CSV
+            </button>
+          )}
+        </div>
+
+        {history.length === 0 ? (
+          <div className="bg-[#111827] border border-[#1f2937] rounded-xl p-8 flex flex-col items-center text-center">
+            <Activity size={28} className="text-gray-600 mb-3" />
+            <p className="text-gray-400 text-sm">
+              No alerts have been triggered yet.
+            </p>
+          </div>
+        ) : (
+          <div className="bg-[#111827] border border-[#1f2937] rounded-xl overflow-x-auto">
+            <table className="w-full text-sm min-w-[600px]">
+              <thead>
+                <tr className="border-b border-[#1f2937]">
+                  {[
+                    'Symbol',
+                    'Condition',
+                    'Target',
+                    'Trigger Price',
+                    'Label',
+                    'Time',
+                  ].map((h) => (
+                    <th
+                      key={h}
+                      className="text-left px-4 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider"
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((entry, i) => (
+                  <tr
+                    key={entry.id}
+                    className={`border-b border-[#1f2937] last:border-0 hover:bg-[#1a2234] transition-colors ${
+                      i % 2 === 0 ? '' : 'bg-[#0a0e1a]/20'
+                    }`}
+                  >
+                    <td className="px-4 py-3 font-bold text-white">
+                      {entry.symbol}
+                    </td>
+                    <td className="px-4 py-3 text-gray-300">
+                      {entry.condition}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-[#00d4aa]">
+                      ${parseFloat(entry.price).toLocaleString()}
+                      {entry.price2 && (
+                        <span className="text-gray-400">
+                          {' '}
+                          – ${parseFloat(entry.price2).toLocaleString()}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-[#ff4757]">
+                      ${Number(entry.triggerPrice).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-gray-400">
+                      {entry.label || (
+                        <span className="text-gray-600">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
+                      {formatTimestamp(entry.timestamp)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

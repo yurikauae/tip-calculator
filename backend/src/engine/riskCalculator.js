@@ -170,6 +170,29 @@ function assessTradeRisk(positionSize, accountBalance, openPositions = []) {
  */
 function calculateMaxDailyLoss(accountBalance, maxLossPercent = 3) {
   if (!accountBalance || accountBalance <= 0) throw new Error('accountBalance must be positive');
+  if (Array.isArray(maxLossPercent)) {
+    const trades = maxLossPercent;
+    const totalLoss = trades.reduce((sum, trade) => sum + Math.max(0, -(Number(trade.pnl) || 0)), 0);
+    const totalGain = trades.reduce((sum, trade) => sum + Math.max(0, Number(trade.pnl) || 0), 0);
+    const netPnl = totalGain - totalLoss;
+    const dailyLossPercent = (totalLoss / accountBalance) * 100;
+    const thresholdPercent = 5;
+    const shouldStopTrading = dailyLossPercent >= thresholdPercent;
+    return {
+      maxDollarLoss: +(accountBalance * thresholdPercent / 100).toFixed(2),
+      maxLossPercent: thresholdPercent,
+      accountBalance: +accountBalance.toFixed(2),
+      totalLoss: +totalLoss.toFixed(2),
+      totalGain: +totalGain.toFixed(2),
+      netPnl: +netPnl.toFixed(2),
+      dailyLossPercent: +dailyLossPercent.toFixed(2),
+      remainingCapacity: +Math.max(0, accountBalance * thresholdPercent / 100 - totalLoss).toFixed(2),
+      shouldStopTrading,
+      recommendation: shouldStopTrading
+        ? 'Daily loss limit reached. Stop paper trading for the remainder of the day.'
+        : `Daily realized losses are ${dailyLossPercent.toFixed(2)}% of equity.`,
+    };
+  }
   if (maxLossPercent <= 0 || maxLossPercent > 100) throw new Error('maxLossPercent must be between 0 and 100');
 
   const maxDollarLoss = (accountBalance * maxLossPercent) / 100;

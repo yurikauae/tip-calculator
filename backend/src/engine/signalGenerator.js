@@ -127,6 +127,7 @@ function generateSignal(symbol, candles, timeframe = '1h') {
   const currentPrice = closes[closes.length - 1];
 
   // --- Compute indicators ---
+  const ema9 = calculateEMA(closes, 9);
   const ema20 = calculateEMA(closes, 20);
   const ema50 = calculateEMA(closes, 50);
   const ema200 = calculateEMA(closes, 200);
@@ -138,6 +139,7 @@ function generateSignal(symbol, candles, timeframe = '1h') {
   const structure = detectMarketStructure(closes);
   const trendStrength = calculateTrendStrength(closes, highs, lows);
 
+  const ema9Val = last(ema9);
   const ema20Val = last(ema20);
   const ema50Val = last(ema50);
   const ema200Val = last(ema200);
@@ -470,6 +472,7 @@ function generateSignal(symbol, candles, timeframe = '1h') {
     style,
     timeframe,
     indicators: {
+      ema9: ema9Val !== null ? +ema9Val.toFixed(5) : null,
       ema20: ema20Val !== null ? +ema20Val.toFixed(5) : null,
       ema50: ema50Val !== null ? +ema50Val.toFixed(5) : null,
       ema200: ema200Val !== null ? +ema200Val.toFixed(5) : null,
