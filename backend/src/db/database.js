@@ -1,40 +1,64 @@
-const low = require('lowdb');
-const FileSync = require('lowdb/adapters/FileSync');
-const path = require('path');
-const fs = require('fs');
+// In-memory store — works on serverless (Vercel) and local dev
+// For persistent storage in production, swap this for a hosted DB like PlanetScale or Supabase
 
-const DB_PATH = path.join(__dirname, '../../data/db.json');
-
-let db;
+let store = {
+  users: [],
+  watchlists: [],
+  assets: [],
+  signals: [],
+  paper_trades: [],
+  journal_entries: [],
+  alerts: [],
+  strategies: [],
+  backtest_results: [],
+  user_settings: [],
+};
 
 function initDatabase() {
-  const dataDir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-
-  const adapter = new FileSync(DB_PATH);
-  db = low(adapter);
-
-  db.defaults({
-    users: [],
-    watchlists: [],
-    assets: [],
-    signals: [],
-    paper_trades: [],
-    journal_entries: [],
-    alerts: [],
-    strategies: [],
-    backtest_results: [],
-    user_settings: [],
-  }).write();
-
-  console.log('Database initialized at', DB_PATH);
+  console.log('In-memory database initialized');
 }
 
 function getDb() {
-  if (!db) throw new Error('Database not initialized. Call initDatabase() first.');
-  return db;
+  return {
+    get: (collection) => ({
+      value: () => store[collection],
+      find: (query) => ({
+        value: () => store[collection].find(item =>
+          Object.entries(query).every(([k, v]) => item[k] === v)
+        ),
+        assign: (updates) => ({
+          write: () => {
+            const idx = store[collection].findIndex(item =>
+              Object.entries(query).every(([k, v]) => item[k] === v)
+            );
+            if (idx !== -1) Object.assign(store[collection][idx], updates);
+          }
+        })
+      }),
+      filter: (query) => ({
+        value: () => store[collection].filter(item =>
+          Object.entries(query).every(([k, v]) => item[k] === v)
+        ),
+        remove: () => ({
+          write: () => {
+            store[collection] = store[collection].filter(item =>
+              !Object.entries(query).every(([k, v]) => item[k] === v)
+            );
+          }
+        })
+      }),
+      push: (item) => ({
+        write: () => { store[collection].push(item); }
+      }),
+      remove: (query) => ({
+        write: () => {
+          store[collection] = store[collection].filter(item =>
+            !Object.entries(query).every(([k, v]) => item[k] === v)
+          );
+        }
+      }),
+    }),
+  };
 }
 
 module.exports = { getDb, initDatabase };
