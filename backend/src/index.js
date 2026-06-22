@@ -26,10 +26,11 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
   : ['http://localhost:5173', 'http://localhost:3000']
 
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' ? allowedOrigins : '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+app.options('*', cors());
 
 // Rate limiting
 const globalLimiter = rateLimit({
