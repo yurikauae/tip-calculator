@@ -3,3 +3,9 @@
 {"level":"info","message":"Market Signal Intelligence API running on port 3101 in test mode","timestamp":"2026-06-22 20:41:09"}
 {"level":"info","message":"New user registered: audit-1782146471065@example.com","timestamp":"2026-06-22 20:41:12"}
 {"level":"info","message":"Market Signal Intelligence API running on port 3001 in development mode","timestamp":"2026-06-22 20:41:16"}
+{"level":"info","message":"Market Signal Intelligence API running on port 3102 in test mode","timestamp":"2026-06-22 20:47:10"}
+{"level":"info","message":"New user registered: audit-1782146832607@example.com","timestamp":"2026-06-22 20:47:13"}
+{"level":"info","message":"Market Signal Intelligence API running on port 3103 in test mode","timestamp":"2026-06-22 20:49:14"}
+{"level":"info","message":"New user registered: persist-1782146951737@example.com","timestamp":"2026-06-22 20:49:15"}
+{"level":"info","message":"Market Signal Intelligence API running on port 3103 in test mode","timestamp":"2026-06-22 20:49:18"}
+{"level":"info","message":"User logged in: persist-1782146951737@example.com","timestamp":"2026-06-22 20:49:19"}
