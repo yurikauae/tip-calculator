@@ -1,9 +1,9 @@
 import axios from 'axios'
 
 // â”€â”€ Axios Instance â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const API_BASE = import.meta.env.VITE_API_URL
-  ? `${import.meta.env.VITE_API_URL}/api`
-  : 'https://backend-teal-psi-90.vercel.app/api'
+const PRODUCTION_API_URL = 'https://tip-calculator-production.up.railway.app'
+const API_ORIGIN = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? PRODUCTION_API_URL : '')
+const API_BASE = API_ORIGIN ? `${API_ORIGIN}/api` : '/api'
 
 const api = axios.create({
   baseURL: API_BASE,
