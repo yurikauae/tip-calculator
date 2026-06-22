@@ -1,9 +1,5 @@
-const path = require('path');
-const fs = require('fs');
-const low = require('lowdb');
-const FileSync = require('lowdb/adapters/FileSync');
-
-const defaults = {
+// In-memory store — works on serverless (Vercel) and local dev
+let store = {
   users: [],
   watchlists: [],
   assets: [],
@@ -16,22 +12,51 @@ const defaults = {
   user_settings: [],
 };
 
-let db;
-
 function initDatabase() {
-  const dataDir = process.env.DATA_DIR || path.join(__dirname, '../../data');
-  fs.mkdirSync(dataDir, { recursive: true });
-  const databaseFile = process.env.DATABASE_FILE || path.join(dataDir, 'market-signal.json');
-  db = low(new FileSync(databaseFile));
-  db.defaults(defaults).write();
-  console.log(`Persistent database initialized at ${databaseFile}`);
+  console.log('In-memory database initialized');
 }
 
 function getDb() {
-  if (!db) {
-    throw new Error('Database has not been initialized');
-  }
-  return db;
+  return {
+    get: (collection) => ({
+      value: () => store[collection] || [],
+      find: (query) => ({
+        value: () => (store[collection] || []).find(item =>
+          Object.entries(query).every(([k, v]) => item[k] === v)
+        ),
+        assign: (updates) => ({
+          write: () => {
+            const idx = (store[collection] || []).findIndex(item =>
+              Object.entries(query).every(([k, v]) => item[k] === v)
+            );
+            if (idx !== -1) Object.assign(store[collection][idx], updates);
+          }
+        })
+      }),
+      filter: (query) => ({
+        value: () => (store[collection] || []).filter(item =>
+          Object.entries(query).every(([k, v]) => item[k] === v)
+        ),
+        remove: () => ({
+          write: () => {
+            store[collection] = (store[collection] || []).filter(item =>
+              !Object.entries(query).every(([k, v]) => item[k] === v)
+            );
+          }
+        })
+      }),
+      push: (item) => ({
+        write: () => { (store[collection] = store[collection] || []).push(item); }
+      }),
+      remove: (query) => ({
+        write: () => {
+          store[collection] = (store[collection] || []).filter(item =>
+            !Object.entries(query).every(([k, v]) => item[k] === v)
+          );
+        }
+      }),
+    }),
+  };
 }
 
 module.exports = { getDb, initDatabase };
