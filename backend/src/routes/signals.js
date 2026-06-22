@@ -3,7 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const { getDb } = require('../db/database');
 const authMiddleware = require('../middleware/auth');
 const { generateSignal } = require('../engine/signalGenerator');
-const { getMockCandles, getAvailableSymbols } = require('../data/mockData');
+const { getMockCandles, getAvailableSymbols } = require('../marketData/mockData');
 
 const router = express.Router();
 

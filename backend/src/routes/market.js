@@ -1,7 +1,7 @@
 ﻿const express = require('express');
 const authMiddleware = require('../middleware/auth');
-const { getMockCandles, getCurrentPrice, getAvailableSymbols } = require('../data/mockData');
-const { getAllAssets, getAssetInfo, getSymbolsByCategory, CATEGORIES } = require('../data/assetInfo');
+const { getMockCandles, getCurrentPrice, getAvailableSymbols } = require('../marketData/mockData');
+const { getAllAssets, getAssetInfo, getSymbolsByCategory, CATEGORIES } = require('../marketData/assetInfo');
 
 const router = express.Router();
 

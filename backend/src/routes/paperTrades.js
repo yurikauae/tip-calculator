@@ -2,7 +2,7 @@
 const { v4: uuidv4 } = require('uuid');
 const { getDb } = require('../db/database');
 const authMiddleware = require('../middleware/auth');
-const { getAssetInfo } = require('../data/assetInfo');
+const { getAssetInfo } = require('../marketData/assetInfo');
 const { calculateMaxDailyLoss } = require('../engine/riskCalculator');
 
 const router = express.Router();
