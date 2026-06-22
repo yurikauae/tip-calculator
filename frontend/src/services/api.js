@@ -16,6 +16,10 @@ const api = axios.create({
 // Request interceptor
 api.interceptors.request.use(
   (config) => {
+    const token = localStorage.getItem('market-signal-token')
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
     return config
   },
   (error) => Promise.reject(error)
@@ -30,9 +34,21 @@ api.interceptors.response.use(
       error.response?.data?.message ||
       error.message ||
       'An unexpected error occurred'
+    if (error.response?.status === 401) {
+      localStorage.removeItem('market-signal-token')
+      localStorage.removeItem('market-signal-user')
+      if (window.location.pathname !== '/login') {
+        window.location.assign('/login')
+      }
+    }
     return Promise.reject(new Error(message))
   }
 )
+
+export const login = (email, password) => api.post('/auth/login', { email, password })
+export const register = (email, username, password) =>
+  api.post('/auth/register', { email, username, password })
+export const getCurrentUser = () => api.get('/auth/me')
 
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const healthCheck = () => api.get('/health')

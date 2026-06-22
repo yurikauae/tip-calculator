@@ -20,25 +20,30 @@ function calculateEMA(prices, period) {
 }
 
 /**
- * Relative Strength Index
+ * Relative Strength Index using Wilder's smoothing method.
+ * First RSI value uses SMA of gains/losses; subsequent values use:
+ *   avgGain = (prevAvgGain * 13 + currentGain) / 14
  */
 function calculateRSI(prices, period = 14) {
   if (!prices || prices.length < period + 1) return [];
   const result = [];
-  let gains = 0;
-  let losses = 0;
 
+  let avgGain = 0;
+  let avgLoss = 0;
+
+  // Seed with SMA of first `period` changes
   for (let i = 1; i <= period; i++) {
     const diff = prices[i] - prices[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses += Math.abs(diff);
+    if (diff >= 0) avgGain += diff;
+    else avgLoss += Math.abs(diff);
   }
+  avgGain /= period;
+  avgLoss /= period;
 
-  let avgGain = gains / period;
-  let avgLoss = losses / period;
   let rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
   result.push({ index: period, value: 100 - 100 / (1 + rs) });
 
+  // Wilder's smoothing for subsequent values
   for (let i = period + 1; i < prices.length; i++) {
     const diff = prices[i] - prices[i - 1];
     const gain = diff >= 0 ? diff : 0;
@@ -54,31 +59,55 @@ function calculateRSI(prices, period = 14) {
 
 /**
  * Moving Average Convergence Divergence
+ * Properly aligns macdLine and signalLine before computing histogram.
  */
 function calculateMACD(prices, fast = 12, slow = 26, signal = 9) {
-  if (!prices || prices.length < slow + signal) return { macd: [], signal: [], histogram: [] };
+  if (!prices || prices.length < slow + signal) {
+    return { macd: [], signal: [], histogram: [] };
+  }
 
   const fastEMA = calculateEMA(prices, fast);
   const slowEMA = calculateEMA(prices, slow);
 
+  // Build macd line: only where both EMAs exist (indexed by candle index)
   const macdLine = [];
-  for (let i = 0; i < slowEMA.length; i++) {
-    const slowEntry = slowEMA[i];
-    const fastEntry = fastEMA.find(e => e.index === slowEntry.index);
-    if (fastEntry) {
-      macdLine.push({ index: slowEntry.index, value: fastEntry.value - slowEntry.value });
+  const slowIndexSet = new Map(slowEMA.map(e => [e.index, e.value]));
+  const fastIndexSet = new Map(fastEMA.map(e => [e.index, e.value]));
+
+  for (const [idx, slowVal] of slowIndexSet) {
+    const fastVal = fastIndexSet.get(idx);
+    if (fastVal !== undefined) {
+      macdLine.push({ index: idx, value: fastVal - slowVal });
+    }
+  }
+  macdLine.sort((a, b) => a.index - b.index);
+
+  if (macdLine.length < signal) {
+    return { macd: macdLine, signal: [], histogram: [] };
+  }
+
+  // Compute signal EMA from macd values array
+  const macdValues = macdLine.map(e => e.value);
+  const signalEMAraw = calculateEMA(macdValues, signal);
+
+  // signalEMAraw indices are relative to macdValues; map back to candle indices
+  // signalEMAraw[i].index is index into macdValues array
+  const signalLine = signalEMAraw.map(e => ({
+    index: macdLine[e.index].index,
+    value: e.value,
+  }));
+
+  // Align: histogram only where both macdLine and signalLine share the same candle index
+  const signalMap = new Map(signalLine.map(e => [e.index, e.value]));
+  const histogram = [];
+  for (const m of macdLine) {
+    const sVal = signalMap.get(m.index);
+    if (sVal !== undefined) {
+      histogram.push({ index: m.index, value: m.value - sVal });
     }
   }
 
-  const macdValues = macdLine.map(e => e.value);
-  const signalEMA = calculateEMA(macdValues, signal);
-
-  const histogram = signalEMA.map((s, i) => ({
-    index: macdLine[s.index] ? macdLine[s.index].index : macdLine[i].index,
-    value: macdLine[i] ? macdLine[i].value - s.value : 0,
-  }));
-
-  return { macd: macdLine, signal: signalEMA, histogram };
+  return { macd: macdLine, signal: signalLine, histogram };
 }
 
 /**
@@ -133,34 +162,197 @@ function calculateATR(highs, lows, closes, period = 14) {
 }
 
 /**
- * Support and Resistance levels based on pivot points in the lookback window.
+ * Stochastic Oscillator (%K and %D lines).
+ * @param {number[]} highs
+ * @param {number[]} lows
+ * @param {number[]} closes
+ * @param {number} kPeriod - lookback for raw %K (default 14)
+ * @param {number} dPeriod - smoothing period for %D (default 3)
+ * @returns {{ k: Array<{index,value}>, d: Array<{index,value}> }}
+ */
+function stochasticOscillator(highs, lows, closes, kPeriod = 14, dPeriod = 3) {
+  if (
+    !highs || !lows || !closes ||
+    highs.length < kPeriod ||
+    highs.length !== lows.length ||
+    highs.length !== closes.length
+  ) {
+    return { k: [], d: [] };
+  }
+
+  const kLine = [];
+  for (let i = kPeriod - 1; i < closes.length; i++) {
+    const periodHighs = highs.slice(i - kPeriod + 1, i + 1);
+    const periodLows = lows.slice(i - kPeriod + 1, i + 1);
+    const highestHigh = Math.max(...periodHighs);
+    const lowestLow = Math.min(...periodLows);
+    const range = highestHigh - lowestLow;
+    const kVal = range === 0 ? 50 : ((closes[i] - lowestLow) / range) * 100;
+    kLine.push({ index: i, value: kVal });
+  }
+
+  if (kLine.length < dPeriod) return { k: kLine, d: [] };
+
+  // %D is SMA of %K over dPeriod
+  const dLine = [];
+  for (let i = dPeriod - 1; i < kLine.length; i++) {
+    const slice = kLine.slice(i - dPeriod + 1, i + 1);
+    const dVal = slice.reduce((a, b) => a + b.value, 0) / dPeriod;
+    dLine.push({ index: kLine[i].index, value: dVal });
+  }
+
+  return { k: kLine, d: dLine };
+}
+
+/**
+ * Volume Weighted Average Price (VWAP).
+ * Calculates cumulative VWAP from the start of the provided data.
+ * @param {number[]} highs
+ * @param {number[]} lows
+ * @param {number[]} closes
+ * @param {number[]} volumes
+ * @returns {Array<{index, value}>}
+ */
+function volumeWeightedAveragePrice(highs, lows, closes, volumes) {
+  if (
+    !highs || !lows || !closes || !volumes ||
+    highs.length === 0 ||
+    highs.length !== lows.length ||
+    highs.length !== closes.length ||
+    highs.length !== volumes.length
+  ) {
+    return [];
+  }
+
+  const result = [];
+  let cumulativeTPV = 0; // typical price * volume
+  let cumulativeVolume = 0;
+
+  for (let i = 0; i < closes.length; i++) {
+    const typicalPrice = (highs[i] + lows[i] + closes[i]) / 3;
+    cumulativeTPV += typicalPrice * volumes[i];
+    cumulativeVolume += volumes[i];
+    const vwap = cumulativeVolume === 0 ? typicalPrice : cumulativeTPV / cumulativeVolume;
+    result.push({ index: i, value: vwap });
+  }
+
+  return result;
+}
+
+/**
+ * Ichimoku Cloud components.
+ * @param {number[]} highs
+ * @param {number[]} lows
+ * @param {number[]} closes
+ * @returns {{ tenkanSen, kijunSen, senkouSpanA, senkouSpanB, chikouSpan }}
+ *   Each is an array of {index, value}.
+ */
+function calculateIchimoku(highs, lows, closes) {
+  const tenkanPeriod = 9;
+  const kijunPeriod = 26;
+  const senkouBPeriod = 52;
+  const displacement = 26;
+
+  if (!highs || highs.length < senkouBPeriod) {
+    return { tenkanSen: [], kijunSen: [], senkouSpanA: [], senkouSpanB: [], chikouSpan: [] };
+  }
+
+  function midpoint(arr, endIdx, period) {
+    if (endIdx < period - 1) return null;
+    const slice = arr.slice(endIdx - period + 1, endIdx + 1);
+    return (Math.max(...slice) + Math.min(...slice)) / 2;
+  }
+
+  const tenkanSen = [];
+  const kijunSen = [];
+  const senkouSpanA = [];
+  const senkouSpanB = [];
+  const chikouSpan = [];
+
+  for (let i = 0; i < closes.length; i++) {
+    const tenkan = midpoint(highs.map((h, j) => Math.max(h, lows[j])), i, tenkanPeriod) !== null
+      ? (Math.max(...highs.slice(Math.max(0, i - tenkanPeriod + 1), i + 1)) +
+         Math.min(...lows.slice(Math.max(0, i - tenkanPeriod + 1), i + 1))) / 2
+      : null;
+
+    const kijun = i >= kijunPeriod - 1
+      ? (Math.max(...highs.slice(i - kijunPeriod + 1, i + 1)) +
+         Math.min(...lows.slice(i - kijunPeriod + 1, i + 1))) / 2
+      : null;
+
+    if (tenkan !== null && i >= tenkanPeriod - 1) {
+      tenkanSen.push({ index: i, value: tenkan });
+    }
+    if (kijun !== null) {
+      kijunSen.push({ index: i, value: kijun });
+    }
+
+    // Senkou Span A and B are displaced forward by 26 periods
+    if (tenkan !== null && kijun !== null) {
+      senkouSpanA.push({ index: i + displacement, value: (tenkan + kijun) / 2 });
+    }
+    if (i >= senkouBPeriod - 1) {
+      const senkouB =
+        (Math.max(...highs.slice(i - senkouBPeriod + 1, i + 1)) +
+         Math.min(...lows.slice(i - senkouBPeriod + 1, i + 1))) / 2;
+      senkouSpanB.push({ index: i + displacement, value: senkouB });
+    }
+
+    // Chikou Span: close displaced back 26 periods (plotted at i - 26)
+    if (i >= displacement) {
+      chikouSpan.push({ index: i - displacement, value: closes[i] });
+    }
+  }
+
+  return { tenkanSen, kijunSen, senkouSpanA, senkouSpanB, chikouSpan };
+}
+
+/**
+ * Support and Resistance levels.
+ * Clusters pivot levels within 0.5%, counts touches, returns top 3 by touch count.
+ * @param {number[]} prices
+ * @param {number} lookback - pivot neighborhood half-width
+ * @returns {{ support: Array<{level, touchCount}>, resistance: Array<{level, touchCount}> }}
  */
 function findSupportResistance(prices, lookback = 20) {
   if (!prices || prices.length < lookback * 2) return { support: [], resistance: [] };
 
-  const support = [];
-  const resistance = [];
+  const rawSupport = [];
+  const rawResistance = [];
 
   for (let i = lookback; i < prices.length - lookback; i++) {
     const slice = prices.slice(i - lookback, i + lookback + 1);
     const min = Math.min(...slice);
     const max = Math.max(...slice);
 
-    if (prices[i] === min) {
-      // Check if this level is close to existing support (within 0.2%)
-      const existing = support.find(s => Math.abs(s - prices[i]) / prices[i] < 0.002);
-      if (!existing) support.push(prices[i]);
-    }
-    if (prices[i] === max) {
-      const existing = resistance.find(r => Math.abs(r - prices[i]) / prices[i] < 0.002);
-      if (!existing) resistance.push(prices[i]);
-    }
+    if (prices[i] === min) rawSupport.push(prices[i]);
+    if (prices[i] === max) rawResistance.push(prices[i]);
   }
 
-  // Return the 3 most recent / significant levels
+  function clusterLevels(levels) {
+    if (levels.length === 0) return [];
+    const clusters = [];
+    for (const level of levels) {
+      const existing = clusters.find(c => Math.abs(c.level - level) / c.level < 0.005);
+      if (existing) {
+        existing.sum += level;
+        existing.count += 1;
+        existing.level = existing.sum / existing.count; // running average
+        existing.touchCount += 1;
+      } else {
+        clusters.push({ level, sum: level, count: 1, touchCount: 1 });
+      }
+    }
+    // Sort by touchCount descending, return top 3
+    return clusters
+      .sort((a, b) => b.touchCount - a.touchCount)
+      .slice(0, 3)
+      .map(c => ({ level: +c.level.toFixed(5), touchCount: c.touchCount }));
+  }
+
   return {
-    support: support.slice(-3).sort((a, b) => b - a),
-    resistance: resistance.slice(-3).sort((a, b) => a - b),
+    support: clusterLevels(rawSupport),
+    resistance: clusterLevels(rawResistance),
   };
 }
 
@@ -217,35 +409,90 @@ function detectMarketStructure(prices) {
 }
 
 /**
- * Trend strength 0-100 using ADX-like calculation.
+ * Trend strength 0-100 combining ADX-like DI calculation with EMA alignment score.
+ * @param {number[]} prices
+ * @param {number[]} [highs] - optional, for true ATR-based DI
+ * @param {number[]} [lows]  - optional
+ * @returns {number} 0-100
  */
-function calculateTrendStrength(prices) {
-  if (!prices || prices.length < 20) return 50;
+function calculateTrendStrength(prices, highs, lows) {
+  if (!prices || prices.length < 28) return 50;
 
   const period = 14;
-  const slice = prices.slice(-period * 2);
 
-  // Directional movement approximation using price only
-  let positiveDM = 0;
-  let negativeDM = 0;
-  let trSum = 0;
+  // --- ADX-like component using directional movement ---
+  const useHL = highs && lows && highs.length === prices.length && lows.length === prices.length;
+  let adxScore = 0;
 
-  for (let i = 1; i < slice.length; i++) {
-    const diff = slice[i] - slice[i - 1];
-    if (diff > 0) positiveDM += diff;
-    else negativeDM += Math.abs(diff);
-    trSum += Math.abs(diff);
+  {
+    const slice = prices.slice(-period * 2);
+    const hSlice = useHL ? highs.slice(-period * 2) : null;
+    const lSlice = useHL ? lows.slice(-period * 2) : null;
+
+    let posDM = 0;
+    let negDM = 0;
+    let trSum = 0;
+
+    for (let i = 1; i < slice.length; i++) {
+      let upMove, downMove, tr;
+      if (useHL) {
+        upMove = hSlice[i] - hSlice[i - 1];
+        downMove = lSlice[i - 1] - lSlice[i];
+        tr = Math.max(
+          hSlice[i] - lSlice[i],
+          Math.abs(hSlice[i] - slice[i - 1]),
+          Math.abs(lSlice[i] - slice[i - 1])
+        );
+      } else {
+        upMove = Math.max(slice[i] - slice[i - 1], 0);
+        downMove = Math.max(slice[i - 1] - slice[i], 0);
+        tr = Math.abs(slice[i] - slice[i - 1]);
+      }
+      posDM += upMove > downMove && upMove > 0 ? upMove : 0;
+      negDM += downMove > upMove && downMove > 0 ? downMove : 0;
+      trSum += tr;
+    }
+
+    if (trSum > 0) {
+      const diPlus = (posDM / trSum) * 100;
+      const diMinus = (negDM / trSum) * 100;
+      const diSum = diPlus + diMinus;
+      adxScore = diSum === 0 ? 0 : (Math.abs(diPlus - diMinus) / diSum) * 100;
+    }
   }
 
-  if (trSum === 0) return 50;
+  // --- EMA alignment component ---
+  let emaScore = 0;
+  if (prices.length >= 200) {
+    const ema20 = calculateEMA(prices, 20);
+    const ema50 = calculateEMA(prices, 50);
+    const ema200 = calculateEMA(prices, 200);
+    const e20 = ema20.length > 0 ? ema20[ema20.length - 1].value : null;
+    const e50 = ema50.length > 0 ? ema50[ema50.length - 1].value : null;
+    const e200 = ema200.length > 0 ? ema200[ema200.length - 1].value : null;
+    const cp = prices[prices.length - 1];
 
-  const diPlus = (positiveDM / trSum) * 100;
-  const diMinus = (negativeDM / trSum) * 100;
-  const diDiff = Math.abs(diPlus - diMinus);
-  const diSum = diPlus + diMinus;
+    if (e20 && e50 && e200) {
+      if (cp > e20 && e20 > e50 && e50 > e200) emaScore = 100; // perfect bull alignment
+      else if (cp < e20 && e20 < e50 && e50 < e200) emaScore = 100; // perfect bear alignment
+      else if ((cp > e20 && e20 > e50) || (cp < e20 && e20 < e50)) emaScore = 60;
+      else if (cp > e50 || cp < e50) emaScore = 30;
+    }
+  } else if (prices.length >= 50) {
+    const ema20 = calculateEMA(prices, 20);
+    const ema50 = calculateEMA(prices, 50);
+    const e20 = ema20.length > 0 ? ema20[ema20.length - 1].value : null;
+    const e50 = ema50.length > 0 ? ema50[ema50.length - 1].value : null;
+    const cp = prices[prices.length - 1];
+    if (e20 && e50) {
+      if ((cp > e20 && e20 > e50) || (cp < e20 && e20 < e50)) emaScore = 80;
+      else emaScore = 20;
+    }
+  }
 
-  const adx = diSum === 0 ? 0 : (diDiff / diSum) * 100;
-  return Math.min(100, Math.round(adx * 2));
+  // Combine: 60% ADX, 40% EMA alignment
+  const combined = adxScore * 0.6 + emaScore * 0.4;
+  return Math.min(100, Math.round(combined));
 }
 
 module.exports = {
@@ -254,6 +501,9 @@ module.exports = {
   calculateMACD,
   calculateBollingerBands,
   calculateATR,
+  stochasticOscillator,
+  volumeWeightedAveragePrice,
+  calculateIchimoku,
   findSupportResistance,
   detectMarketStructure,
   calculateTrendStrength,

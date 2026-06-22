@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Asset metadata for all 20 supported symbols.
  * Includes display name, category, description, pip values, and typical spreads.
  */

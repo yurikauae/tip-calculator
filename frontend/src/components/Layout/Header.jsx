@@ -10,6 +10,7 @@ import {
   TrendingDown,
   Minus,
   Clock,
+  LogOut,
 } from 'lucide-react'
 import useStore from '../../store/useStore'
 import { searchSymbol } from '../../services/api'
@@ -162,7 +163,7 @@ function SearchBar() {
 }
 
 export default function Header() {
-  const { paperMode, setPaperMode, notifications, unreadAlertCount, clearUnreadAlerts } = useStore()
+  const { paperMode, setPaperMode, notifications, unreadAlertCount, clearUnreadAlerts, currentUser, clearSession } = useStore()
   const [showNotifications, setShowNotifications] = useState(false)
   const notifRef = useRef(null)
   const unreadCount = notifications.filter((n) => !n.read).length
@@ -232,6 +233,20 @@ export default function Header() {
         {showNotifications && (
           <NotificationsDropdown onClose={() => setShowNotifications(false)} />
         )}
+      </div>
+
+      <div className="hidden md:flex items-center gap-2 pl-2 border-l border-border">
+        <div className="text-right leading-tight">
+          <div className="text-xs text-text-primary">{currentUser?.username || 'Trader'}</div>
+          <div className="text-[10px] text-text-muted">Paper trading only</div>
+        </div>
+        <button
+          onClick={clearSession}
+          className="w-8 h-8 flex items-center justify-center rounded-lg bg-bg-elevated border border-border text-text-secondary hover:text-signal-red"
+          title="Sign out"
+        >
+          <LogOut className="w-4 h-4" />
+        </button>
       </div>
     </header>
   )

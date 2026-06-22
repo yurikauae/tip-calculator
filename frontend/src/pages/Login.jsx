@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { login, register } from "../services/api";
+import useStore from "../store/useStore";
 
 const Login = () => {
   const [mode, setMode] = useState("login");
@@ -9,8 +12,10 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const navigate = useNavigate();
+  const setSession = useStore((state) => state.setSession);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
     if (mode === "register" && password !== confirmPassword) {
@@ -22,10 +27,23 @@ const Login = () => {
       return;
     }
     setLoading(true);
-    setTimeout(() => {
+    try {
+      const username = name
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+      const data =
+        mode === "login"
+          ? await login(email, password)
+          : await register(email, username || `trader_${Date.now()}`, password);
+      setSession(data.token, data.user);
+      navigate("/dashboard", { replace: true });
+    } catch (err) {
+      setError(err.message || "Authentication failed.");
+    } finally {
       setLoading(false);
-      // Integrate with your auth system here
-    }, 1200);
+    }
   };
 
   return (

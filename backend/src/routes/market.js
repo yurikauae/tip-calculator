@@ -1,170 +1,211 @@
-const express = require('express');
+﻿const express = require('express');
 const authMiddleware = require('../middleware/auth');
+const { getMockCandles, getCurrentPrice, getAvailableSymbols } = require('../data/mockData');
+const { getAllAssets, getAssetInfo, getSymbolsByCategory, CATEGORIES } = require('../data/assetInfo');
 
 const router = express.Router();
 
-// Mock data generators
-function generateMockPrice(symbol) {
-  const basePrices = {
-    AAPL: 175.50, MSFT: 380.20, GOOGL: 140.30, AMZN: 178.90, TSLA: 245.60,
-    META: 490.10, NVDA: 875.40, BTC: 65000, ETH: 3200, SPY: 520.00,
-    QQQ: 440.50, DEFAULT: 100.00
-  };
-  const base = basePrices[symbol.toUpperCase()] || basePrices.DEFAULT;
-  const variation = (Math.random() - 0.5) * base * 0.02;
-  return Math.max(0.01, base + variation);
-}
+// Valid timeframes supported by getMockCandles
+const VALID_TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1D', '1d'];
 
-function generateMockCandles(symbol, timeframe, count = 100) {
-  const candles = [];
-  let price = generateMockPrice(symbol);
-  const now = Date.now();
-  const timeframeMs = {
-    '1m': 60000, '5m': 300000, '15m': 900000, '30m': 1800000,
-    '1h': 3600000, '4h': 14400000, '1d': 86400000, '1w': 604800000
-  };
-  const interval = timeframeMs[timeframe] || timeframeMs['1h'];
-
-  for (let i = count; i >= 0; i--) {
-    const timestamp = now - i * interval;
-    const open = price;
-    const change = (Math.random() - 0.48) * price * 0.015;
-    const close = Math.max(0.01, open + change);
-    const high = Math.max(open, close) * (1 + Math.random() * 0.008);
-    const low = Math.min(open, close) * (1 - Math.random() * 0.008);
-    const volume = Math.floor(Math.random() * 5000000) + 500000;
-
-    candles.push({
-      timestamp,
-      datetime: new Date(timestamp).toISOString(),
-      open: parseFloat(open.toFixed(4)),
-      high: parseFloat(high.toFixed(4)),
-      low: parseFloat(low.toFixed(4)),
-      close: parseFloat(close.toFixed(4)),
-      volume
-    });
-
-    price = close;
-  }
-
-  return candles;
-}
-
-function generateMockAssets() {
-  return [
-    { symbol: 'AAPL', name: 'Apple Inc.', type: 'stock', exchange: 'NASDAQ', price: generateMockPrice('AAPL') },
-    { symbol: 'MSFT', name: 'Microsoft Corporation', type: 'stock', exchange: 'NASDAQ', price: generateMockPrice('MSFT') },
-    { symbol: 'GOOGL', name: 'Alphabet Inc.', type: 'stock', exchange: 'NASDAQ', price: generateMockPrice('GOOGL') },
-    { symbol: 'AMZN', name: 'Amazon.com Inc.', type: 'stock', exchange: 'NASDAQ', price: generateMockPrice('AMZN') },
-    { symbol: 'TSLA', name: 'Tesla Inc.', type: 'stock', exchange: 'NASDAQ', price: generateMockPrice('TSLA') },
-    { symbol: 'META', name: 'Meta Platforms Inc.', type: 'stock', exchange: 'NASDAQ', price: generateMockPrice('META') },
-    { symbol: 'NVDA', name: 'NVIDIA Corporation', type: 'stock', exchange: 'NASDAQ', price: generateMockPrice('NVDA') },
-    { symbol: 'SPY', name: 'SPDR S&P 500 ETF', type: 'etf', exchange: 'NYSE', price: generateMockPrice('SPY') },
-    { symbol: 'QQQ', name: 'Invesco QQQ ETF', type: 'etf', exchange: 'NASDAQ', price: generateMockPrice('QQQ') },
-    { symbol: 'BTC', name: 'Bitcoin', type: 'crypto', exchange: 'CRYPTO', price: generateMockPrice('BTC') },
-    { symbol: 'ETH', name: 'Ethereum', type: 'crypto', exchange: 'CRYPTO', price: generateMockPrice('ETH') }
-  ];
-}
-
-// GET /api/market/assets
+// ------------------------------------------------------------------ GET /assets
+// Returns all 20 symbols from assetInfo with current price from mockData.
 router.get('/assets', authMiddleware, (req, res, next) => {
   try {
-    const { type, search } = req.query;
-    let assets = generateMockAssets();
-
-    if (type) {
-      assets = assets.filter(a => a.type === type.toLowerCase());
-    }
-
-    if (search) {
-      const searchLower = search.toLowerCase();
-      assets = assets.filter(a =>
-        a.symbol.toLowerCase().includes(searchLower) ||
-        a.name.toLowerCase().includes(searchLower)
-      );
-    }
+    const assets = getAllAssets().map(info => {
+      const price = getCurrentPrice(info.symbol);
+      return {
+        symbol: info.symbol,
+        name: info.name,
+        category: info.category,
+        price: price !== null ? price : null,
+      };
+    });
 
     res.json({
       assets,
       count: assets.length,
-      source: process.env.TWELVE_DATA_API_KEY ? 'live' : 'mock'
+      source: 'mock',
     });
   } catch (err) {
     next(err);
   }
 });
 
-// GET /api/market/assets/:symbol/price
+// ------------------------------------------------------------------ GET /assets/search?q=term
+router.get('/assets/search', authMiddleware, (req, res, next) => {
+  try {
+    const { q = '' } = req.query;
+    if (!q.trim()) {
+      return res.status(400).json({ error: 'Query parameter "q" is required.' });
+    }
+    const term = q.toLowerCase();
+    const results = getAllAssets()
+      .filter(
+        info =>
+          info.symbol.toLowerCase().includes(term) ||
+          info.name.toLowerCase().includes(term)
+      )
+      .map(info => ({
+        symbol: info.symbol,
+        name: info.name,
+        category: info.category,
+        price: getCurrentPrice(info.symbol),
+      }));
+
+    res.json({ results, count: results.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ------------------------------------------------------------------ GET /assets/categories/:category
+router.get('/assets/categories/:category', authMiddleware, (req, res, next) => {
+  try {
+    const { category } = req.params;
+
+    // Accept both raw category keys (FOREX) and display names (Forex)
+    const normalizedInput = category.toLowerCase();
+    const categoryMap = {};
+    for (const [key, label] of Object.entries(CATEGORIES)) {
+      categoryMap[key.toLowerCase()] = label;
+      categoryMap[label.toLowerCase()] = label;
+    }
+
+    const resolvedCategory = categoryMap[normalizedInput];
+    if (!resolvedCategory) {
+      const validValues = [...new Set(Object.values(categoryMap))];
+      return res.status(400).json({
+        error: `Unknown category "${category}". Valid values: ${validValues.join(', ')}`,
+      });
+    }
+
+    const assets = getAllAssets()
+      .filter(info => info.category === resolvedCategory)
+      .map(info => ({
+        symbol: info.symbol,
+        name: info.name,
+        category: info.category,
+        price: getCurrentPrice(info.symbol),
+      }));
+
+    res.json({ category: resolvedCategory, assets, count: assets.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ------------------------------------------------------------------ GET /assets/:symbol/price
 router.get('/assets/:symbol/price', authMiddleware, (req, res, next) => {
   try {
     const { symbol } = req.params;
     const normalizedSymbol = symbol.toUpperCase();
 
-    const price = generateMockPrice(normalizedSymbol);
-    const previousClose = price * (1 + (Math.random() - 0.5) * 0.03);
+    const candles = getMockCandles(normalizedSymbol, '1h', 2);
+    if (!candles || candles.length === 0) {
+      return res.status(404).json({ error: `Symbol "${normalizedSymbol}" not found.` });
+    }
+
+    const latest = candles[candles.length - 1];
+    const previous = candles.length > 1 ? candles[candles.length - 2] : latest;
+
+    const price = latest.close;
+    const previousClose = previous.close;
     const change = price - previousClose;
-    const changePercent = (change / previousClose) * 100;
+    const changePercent = previousClose !== 0 ? (change / previousClose) * 100 : 0;
+
+    // Fetch the full day of 1h candles for high/low
+    const dayCandles = getMockCandles(normalizedSymbol, '1h', 24) || [];
+    const high24h = dayCandles.length > 0 ? Math.max(...dayCandles.map(c => c.high)) : latest.high;
+    const low24h = dayCandles.length > 0 ? Math.min(...dayCandles.map(c => c.low)) : latest.low;
 
     res.json({
       symbol: normalizedSymbol,
-      price: parseFloat(price.toFixed(4)),
-      previousClose: parseFloat(previousClose.toFixed(4)),
-      change: parseFloat(change.toFixed(4)),
-      changePercent: parseFloat(changePercent.toFixed(2)),
-      volume: Math.floor(Math.random() * 10000000) + 1000000,
-      marketCap: null,
-      timestamp: new Date().toISOString(),
-      source: process.env.TWELVE_DATA_API_KEY ? 'live' : 'mock'
+      price: +price.toFixed(6),
+      previousClose: +previousClose.toFixed(6),
+      change: +change.toFixed(6),
+      changePercent: +changePercent.toFixed(4),
+      high24h: +high24h.toFixed(6),
+      low24h: +low24h.toFixed(6),
+      timestamp: latest.timestamp,
+      source: 'mock',
     });
   } catch (err) {
     next(err);
   }
 });
 
-// GET /api/market/assets/:symbol/candles?timeframe=1h
+// ------------------------------------------------------------------ GET /assets/:symbol/candles
 router.get('/assets/:symbol/candles', authMiddleware, (req, res, next) => {
   try {
     const { symbol } = req.params;
-    const { timeframe = '1h', limit = 100 } = req.query;
+    const { timeframe = '1h', count = '100' } = req.query;
+    const normalizedSymbol = symbol.toUpperCase();
 
-    const validTimeframes = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'];
-    if (!validTimeframes.includes(timeframe)) {
-      return res.status(400).json({ error: `Invalid timeframe. Must be one of: ${validTimeframes.join(', ')}` });
+    if (!VALID_TIMEFRAMES.includes(timeframe)) {
+      return res.status(400).json({
+        error: `Invalid timeframe "${timeframe}". Must be one of: ${VALID_TIMEFRAMES.join(', ')}`,
+      });
     }
 
-    const count = Math.min(parseInt(limit) || 100, 500);
-    const candles = generateMockCandles(symbol.toUpperCase(), timeframe, count);
+    const parsedCount = Math.min(Math.max(parseInt(count, 10) || 100, 1), 500);
+    const candles = getMockCandles(normalizedSymbol, timeframe, parsedCount);
+
+    if (!candles) {
+      return res.status(404).json({ error: `Symbol "${normalizedSymbol}" not found.` });
+    }
 
     res.json({
-      symbol: symbol.toUpperCase(),
+      symbol: normalizedSymbol,
       timeframe,
       candles,
       count: candles.length,
-      source: process.env.TWELVE_DATA_API_KEY ? 'live' : 'mock'
+      source: 'mock',
     });
   } catch (err) {
     next(err);
   }
 });
 
-// GET /api/market/assets/:symbol/overview
+// ------------------------------------------------------------------ GET /assets/:symbol/overview
 router.get('/assets/:symbol/overview', authMiddleware, (req, res, next) => {
   try {
     const { symbol } = req.params;
     const normalizedSymbol = symbol.toUpperCase();
-    const price = generateMockPrice(normalizedSymbol);
+
+    const info = getAssetInfo(normalizedSymbol);
+    if (!info) {
+      return res.status(404).json({ error: `Symbol "${normalizedSymbol}" not found.` });
+    }
+
+    const candles = getMockCandles(normalizedSymbol, '1h', 500) || [];
+    const latest = candles[candles.length - 1];
+    const yearCandles = candles; // all 500 are roughly 20 days of 1h data
+
+    const high52w = yearCandles.length > 0 ? Math.max(...yearCandles.map(c => c.high)) : null;
+    const low52w = yearCandles.length > 0 ? Math.min(...yearCandles.map(c => c.low)) : null;
+    const avgVolume = yearCandles.length > 0
+      ? Math.round(yearCandles.reduce((s, c) => s + c.volume, 0) / yearCandles.length)
+      : null;
 
     res.json({
       symbol: normalizedSymbol,
-      price: parseFloat(price.toFixed(4)),
-      open: parseFloat((price * (1 + (Math.random() - 0.5) * 0.01)).toFixed(4)),
-      high: parseFloat((price * (1 + Math.random() * 0.02)).toFixed(4)),
-      low: parseFloat((price * (1 - Math.random() * 0.02)).toFixed(4)),
-      volume: Math.floor(Math.random() * 10000000) + 1000000,
-      fiftyTwoWeekHigh: parseFloat((price * 1.3).toFixed(4)),
-      fiftyTwoWeekLow: parseFloat((price * 0.7).toFixed(4)),
-      avgVolume: Math.floor(Math.random() * 8000000) + 2000000,
-      source: 'mock'
+      name: info.name,
+      category: info.category,
+      price: latest ? +latest.close.toFixed(6) : null,
+      open: latest ? +latest.open.toFixed(6) : null,
+      high: latest ? +latest.high.toFixed(6) : null,
+      low: latest ? +latest.low.toFixed(6) : null,
+      volume: latest ? latest.volume : null,
+      high52w: high52w !== null ? +high52w.toFixed(6) : null,
+      low52w: low52w !== null ? +low52w.toFixed(6) : null,
+      avgVolume,
+      pipValue: info.pipValue,
+      pipSize: info.pipSize,
+      typicalSpread: info.typicalSpread,
+      maxLeverage: info.maxLeverage,
+      sessionNote: info.sessionNote,
+      source: 'mock',
     });
   } catch (err) {
     next(err);

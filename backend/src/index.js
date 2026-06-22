@@ -1,4 +1,4 @@
-﻿require('dotenv').config();
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -55,6 +55,20 @@ app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), service: 'Market Signal Intelligence API' });
+});
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), service: 'Market Signal Intelligence API' });
+});
+app.get('/api/capabilities', (req, res) => {
+  const liveMarketData = Boolean(process.env.TWELVE_DATA_API_KEY);
+  res.json({
+    paperTradingOnly: true,
+    liveMarketData,
+    marketDataProvider: liveMarketData ? 'Twelve Data' : 'Synthetic demo feed',
+    persistence: process.env.DATA_DIR ? 'persistent-volume' : 'local-file',
+    executionEnabled: false,
+    disclaimer: 'Educational analysis only. Not financial advice. No profit is guaranteed.',
+  });
 });
 
 // Routes

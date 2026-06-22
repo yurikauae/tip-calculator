@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout/Layout'
+import useStore from './store/useStore'
 
 // Lazy-loaded pages
 const Dashboard = React.lazy(() => import('./pages/Dashboard'))
@@ -15,6 +16,13 @@ const Alerts = React.lazy(() => import('./pages/Alerts'))
 const News = React.lazy(() => import('./pages/News'))
 const Settings = React.lazy(() => import('./pages/Settings'))
 const About = React.lazy(() => import('./pages/About'))
+const Login = React.lazy(() => import('./pages/Login'))
+const RiskCalculator = React.lazy(() => import('./pages/RiskCalculator'))
+const TradeJournal = React.lazy(() => import('./pages/TradeJournal'))
+const StrategyTester = React.lazy(() => import('./pages/StrategyTester'))
+const Disclaimer = React.lazy(() => import('./pages/Disclaimer'))
+const AssetDetail = React.lazy(() => import('./pages/AssetDetail'))
+const Education = React.lazy(() => import('./pages/Education'))
 
 const PageFallback = () => (
   <div className="flex items-center justify-center h-full min-h-[60vh]">
@@ -26,10 +34,32 @@ const PageFallback = () => (
 )
 
 export default function App() {
+  const authToken = useStore((state) => state.authToken)
+
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<Layout />}>
+        <Route
+          path="/login"
+          element={
+            authToken ? (
+              <Navigate to="/dashboard" replace />
+            ) : (
+              <React.Suspense fallback={<PageFallback />}>
+                <Login />
+              </React.Suspense>
+            )
+          }
+        />
+        <Route
+          path="/disclaimer"
+          element={
+            <React.Suspense fallback={<PageFallback />}>
+              <Disclaimer />
+            </React.Suspense>
+          }
+        />
+        <Route path="/" element={authToken ? <Layout /> : <Navigate to="/login" replace />}>
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route
             path="dashboard"
@@ -127,6 +157,12 @@ export default function App() {
               </React.Suspense>
             }
           />
+          <Route path="asset/:symbol" element={<React.Suspense fallback={<PageFallback />}><AssetDetail /></React.Suspense>} />
+          <Route path="signals/:symbol" element={<React.Suspense fallback={<PageFallback />}><AssetDetail /></React.Suspense>} />
+          <Route path="risk-calculator" element={<React.Suspense fallback={<PageFallback />}><RiskCalculator /></React.Suspense>} />
+          <Route path="trade-journal" element={<React.Suspense fallback={<PageFallback />}><TradeJournal /></React.Suspense>} />
+          <Route path="strategy-tester" element={<React.Suspense fallback={<PageFallback />}><StrategyTester /></React.Suspense>} />
+          <Route path="education" element={<React.Suspense fallback={<PageFallback />}><Education /></React.Suspense>} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>
       </Routes>

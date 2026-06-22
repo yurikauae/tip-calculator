@@ -1,4 +1,4 @@
-﻿function validateRegister(req, res, next) {
+function validateRegister(req, res, next) {
   const { email, username, password } = req.body;
   const errors = [];
 
@@ -72,7 +72,7 @@ function validateJournalEntry(req, res, next) {
 }
 
 function validatePaperTrade(req, res, next) {
-  const { symbol, direction, quantity, entry_price } = req.body;
+  const { symbol, direction, quantity, entry_price, stop_loss, take_profit, account_balance } = req.body;
   const errors = [];
 
   if (!symbol || typeof symbol !== 'string' || symbol.trim().length === 0) {
@@ -89,6 +89,29 @@ function validatePaperTrade(req, res, next) {
 
   if (!entry_price || isNaN(entry_price) || Number(entry_price) <= 0) {
     errors.push('Entry price must be a positive number');
+  }
+
+  if (account_balance !== undefined && (isNaN(account_balance) || Number(account_balance) <= 0)) {
+    errors.push('Account balance must be a positive number');
+  }
+
+  if (stop_loss !== undefined && stop_loss !== null && (isNaN(stop_loss) || Number(stop_loss) <= 0)) {
+    errors.push('Stop loss must be a positive number');
+  }
+
+  if (take_profit !== undefined && take_profit !== null && (isNaN(take_profit) || Number(take_profit) <= 0)) {
+    errors.push('Take profit must be a positive number');
+  }
+
+  if (direction && entry_price && stop_loss) {
+    const entry = Number(entry_price);
+    const stop = Number(stop_loss);
+    if (direction.toLowerCase() === 'long' && stop >= entry) {
+      errors.push('A long trade stop loss must be below the entry price');
+    }
+    if (direction.toLowerCase() === 'short' && stop <= entry) {
+      errors.push('A short trade stop loss must be above the entry price');
+    }
   }
 
   if (errors.length > 0) {

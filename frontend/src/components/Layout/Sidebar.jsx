@@ -16,6 +16,9 @@ import {
   TrendingUp,
   ChevronLeft,
   ChevronRight,
+  Calculator,
+  BookOpen,
+  NotebookPen,
 } from 'lucide-react'
 import useStore from '../../store/useStore'
 
@@ -42,6 +45,8 @@ const NAV_ITEMS = [
       { path: '/paper-trading', label: 'Paper Trading', icon: FlaskConical },
       { path: '/portfolio', label: 'Portfolio', icon: Briefcase },
       { path: '/backtest', label: 'Backtest', icon: TestTube },
+      { path: '/risk-calculator', label: 'Risk Calculator', icon: Calculator },
+      { path: '/trade-journal', label: 'Trade Journal', icon: NotebookPen },
     ],
   },
   {
@@ -50,6 +55,7 @@ const NAV_ITEMS = [
       { path: '/alerts', label: 'Alerts', icon: Bell },
       { path: '/settings', label: 'Settings', icon: Settings },
       { path: '/about', label: 'About', icon: Info },
+      { path: '/education', label: 'Education', icon: BookOpen },
     ],
   },
 ]

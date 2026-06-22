@@ -33,11 +33,71 @@ function last(arr) {
 }
 
 /**
+ * Find the most recent swing low in the last `lookback` candles (for buy invalidation).
+ */
+function findRecentSwingLow(lows, lookback = 20) {
+  if (!lows || lows.length < 3) return null;
+  const slice = lows.slice(-lookback);
+  let swingLow = null;
+  for (let i = 1; i < slice.length - 1; i++) {
+    if (slice[i] < slice[i - 1] && slice[i] < slice[i + 1]) {
+      swingLow = slice[i];
+    }
+  }
+  // If no pivot found, use the minimum of the slice
+  return swingLow !== null ? swingLow : Math.min(...slice);
+}
+
+/**
+ * Find the most recent swing high in the last `lookback` candles (for sell invalidation).
+ */
+function findRecentSwingHigh(highs, lookback = 20) {
+  if (!highs || highs.length < 3) return null;
+  const slice = highs.slice(-lookback);
+  let swingHigh = null;
+  for (let i = 1; i < slice.length - 1; i++) {
+    if (slice[i] > slice[i - 1] && slice[i] > slice[i + 1]) {
+      swingHigh = slice[i];
+    }
+  }
+  return swingHigh !== null ? swingHigh : Math.max(...slice);
+}
+
+/**
+ * Compute rolling standard deviation of close-to-close returns for volatility.
+ */
+function computeVolatility(closes, period = 20) {
+  if (!closes || closes.length < period + 1) return null;
+  const returns = [];
+  for (let i = closes.length - period; i < closes.length; i++) {
+    returns.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+  }
+  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+  const variance = returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
+  return Math.sqrt(variance);
+}
+
+/**
  * Generate a trading signal from OHLCV candle data.
  *
- * @param {string} symbol - e.g. "EURUSD"
- * @param {Array} candles - array of {open, high, low, close, volume, timestamp}
- * @param {string} timeframe - e.g. "1h", "4h", "1d"
+ * Confidence scoring (100 pts max):
+ *   RSI divergence/condition  = 25 pts
+ *   MACD crossover/histogram  = 25 pts
+ *   EMA alignment             = 20 pts
+ *   S/R bounce                = 20 pts
+ *   Trend strength            = 10 pts
+ *
+ * Signal rules:
+ *   Strong Buy  > 80
+ *   Buy         60-80
+ *   Hold        40-60
+ *   Sell        20-40
+ *   Strong Sell < 20  (bearish dominant)
+ *   Wait        mixed/neutral
+ *
+ * @param {string} symbol
+ * @param {Array} candles - [{open, high, low, close, volume, timestamp}]
+ * @param {string} timeframe
  * @returns {Object} signal object
  */
 function generateSignal(symbol, candles, timeframe = '1h') {
@@ -47,8 +107,10 @@ function generateSignal(symbol, candles, timeframe = '1h') {
       confidence: 0,
       entryZone: null,
       stopLoss: null,
+      trailingStop: null,
       takeProfits: [],
-      riskReward: null,
+      riskReward: { r1: null, r2: null, r3: null },
+      sharpelike: null,
       reason: 'Insufficient data to generate a reliable signal. At least 50 candles are required.',
       invalidatedAt: null,
       suggestedRisk: '1%',
@@ -61,6 +123,7 @@ function generateSignal(symbol, candles, timeframe = '1h') {
   const closes = candles.map(c => c.close);
   const highs = candles.map(c => c.high);
   const lows = candles.map(c => c.low);
+  const volumes = candles.map(c => c.volume || 0);
   const currentPrice = closes[closes.length - 1];
 
   // --- Compute indicators ---
@@ -73,7 +136,7 @@ function generateSignal(symbol, candles, timeframe = '1h') {
   const atrData = calculateATR(highs, lows, closes, 14);
   const srLevels = findSupportResistance(closes, 20);
   const structure = detectMarketStructure(closes);
-  const trendStrength = calculateTrendStrength(closes);
+  const trendStrength = calculateTrendStrength(closes, highs, lows);
 
   const ema20Val = last(ema20);
   const ema50Val = last(ema50);
@@ -86,156 +149,219 @@ function generateSignal(symbol, candles, timeframe = '1h') {
   const bbMiddle = last(bbData.middle);
   const bbLower = last(bbData.lower);
   const atrVal = last(atrData);
+  const atr = atrVal || currentPrice * 0.005;
 
-  // --- Scoring system ---
-  // Each bullish condition adds +1, each bearish adds -1
-  let score = 0;
-  const bullishReasons = [];
-  const bearishReasons = [];
+  // Previous histogram value to detect crossover direction
+  const prevMacdHist =
+    macdData.histogram.length >= 2
+      ? macdData.histogram[macdData.histogram.length - 2].value
+      : null;
 
-  // EMA alignment
-  if (ema20Val && ema50Val && ema20Val > ema50Val) {
-    score += 1;
-    bullishReasons.push('EMA 20 is above EMA 50 (short-term momentum is bullish)');
-  } else if (ema20Val && ema50Val && ema20Val < ema50Val) {
-    score -= 1;
-    bearishReasons.push('EMA 20 is below EMA 50 (short-term momentum is bearish)');
-  }
+  // --- WEIGHTED CONFIDENCE SCORING ---
+  // We track bullish points and bearish points per category,
+  // then decide direction by which side dominates.
 
-  if (ema50Val && ema200Val && ema50Val > ema200Val) {
-    score += 1;
-    bullishReasons.push('EMA 50 is above EMA 200 (long-term trend appears bullish)');
-  } else if (ema50Val && ema200Val && ema50Val < ema200Val) {
-    score -= 1;
-    bearishReasons.push('EMA 50 is below EMA 200 (long-term trend appears bearish)');
-  }
+  // Category max weights: RSI=25, MACD=25, EMA=20, SR=20, Trend=10
 
-  if (ema50Val && currentPrice > ema50Val) {
-    score += 1;
-    bullishReasons.push('price is above EMA 50');
-  } else if (ema50Val && currentPrice < ema50Val) {
-    score -= 1;
-    bearishReasons.push('price is below EMA 50');
-  }
+  let rsiPoints = 0;   // positive = bullish, negative = bearish (-25 to +25)
+  let macdPoints = 0;  // (-25 to +25)
+  let emaPoints = 0;   // (-20 to +20)
+  let srPoints = 0;    // (-20 to +20)
+  let trendPoints = 0; // (-10 to +10)
 
-  if (ema200Val && currentPrice > ema200Val) {
-    score += 1;
-    bullishReasons.push('price is above EMA 200 (above major long-term average)');
-  } else if (ema200Val && currentPrice < ema200Val) {
-    score -= 1;
-    bearishReasons.push('price is below EMA 200 (below major long-term average)');
-  }
+  const reasonParts = { bullish: [], bearish: [] };
 
-  // RSI
+  // --- RSI (25 pts) ---
   if (rsiVal !== null) {
     if (rsiVal < 30) {
-      score += 2;
-      bullishReasons.push(`RSI is oversold at ${rsiVal.toFixed(1)} (potential reversal zone)`);
+      rsiPoints = 25;
+      reasonParts.bullish.push(`RSI is oversold at ${rsiVal.toFixed(1)} (strongly bullish divergence zone)`);
     } else if (rsiVal < 45) {
-      score += 1;
-      bullishReasons.push(`RSI at ${rsiVal.toFixed(1)} suggests room to move higher`);
+      rsiPoints = 13;
+      reasonParts.bullish.push(`RSI at ${rsiVal.toFixed(1)} is in the bullish zone with upside room`);
     } else if (rsiVal > 70) {
-      score -= 2;
-      bearishReasons.push(`RSI is overbought at ${rsiVal.toFixed(1)} (potential reversal zone)`);
+      rsiPoints = -25;
+      reasonParts.bearish.push(`RSI is overbought at ${rsiVal.toFixed(1)} (strongly bearish divergence zone)`);
     } else if (rsiVal > 55) {
-      score -= 1;
-      bearishReasons.push(`RSI at ${rsiVal.toFixed(1)} suggests limited upside momentum`);
+      rsiPoints = -13;
+      reasonParts.bearish.push(`RSI at ${rsiVal.toFixed(1)} is in the bearish zone with limited upside`);
     }
+    // 45-55: neutral, 0 pts
   }
 
-  // MACD
+  // --- MACD (25 pts) ---
   if (macdVal !== null && macdSignalVal !== null) {
-    if (macdVal > macdSignalVal) {
-      score += 1;
-      bullishReasons.push('MACD line is above the signal line (bullish crossover condition)');
+    const bullishCross = macdVal > macdSignalVal;
+    const histExpanding = macdHistVal !== null && prevMacdHist !== null && Math.abs(macdHistVal) > Math.abs(prevMacdHist);
+    const histPositive = macdHistVal !== null && macdHistVal > 0;
+
+    if (bullishCross && histPositive && histExpanding) {
+      macdPoints = 25;
+      reasonParts.bullish.push(
+        `MACD line (${macdVal.toFixed(5)}) is above signal (${macdSignalVal.toFixed(5)}) with expanding positive histogram`
+      );
+    } else if (bullishCross && histPositive) {
+      macdPoints = 18;
+      reasonParts.bullish.push(
+        `MACD line (${macdVal.toFixed(5)}) is above signal (${macdSignalVal.toFixed(5)}) with positive histogram`
+      );
+    } else if (bullishCross) {
+      macdPoints = 10;
+      reasonParts.bullish.push(`MACD line (${macdVal.toFixed(5)}) crossed above signal (${macdSignalVal.toFixed(5)})`);
+    } else if (!bullishCross && !histPositive && histExpanding) {
+      macdPoints = -25;
+      reasonParts.bearish.push(
+        `MACD line (${macdVal.toFixed(5)}) is below signal (${macdSignalVal.toFixed(5)}) with expanding negative histogram`
+      );
+    } else if (!bullishCross && !histPositive) {
+      macdPoints = -18;
+      reasonParts.bearish.push(
+        `MACD line (${macdVal.toFixed(5)}) is below signal (${macdSignalVal.toFixed(5)}) with negative histogram`
+      );
     } else {
-      score -= 1;
-      bearishReasons.push('MACD line is below the signal line (bearish crossover condition)');
-    }
-    if (macdHistVal !== null && macdHistVal > 0) {
-      score += 1;
-      bullishReasons.push('MACD histogram is positive and expanding');
-    } else if (macdHistVal !== null && macdHistVal < 0) {
-      score -= 1;
-      bearishReasons.push('MACD histogram is negative (selling pressure)');
+      macdPoints = -10;
+      reasonParts.bearish.push(`MACD line (${macdVal.toFixed(5)}) crossed below signal (${macdSignalVal.toFixed(5)})`);
     }
   }
 
-  // Bollinger Bands
-  if (bbLower && bbUpper && bbMiddle) {
-    if (currentPrice <= bbLower) {
-      score += 2;
-      bullishReasons.push('price has touched or broken the lower Bollinger Band (statistically oversold)');
-    } else if (currentPrice < bbMiddle) {
-      score += 1;
-      bullishReasons.push('price is in the lower half of the Bollinger Band');
-    } else if (currentPrice >= bbUpper) {
-      score -= 2;
-      bearishReasons.push('price has touched or broken the upper Bollinger Band (statistically overbought)');
-    } else if (currentPrice > bbMiddle) {
-      score -= 1;
-      bearishReasons.push('price is in the upper half of the Bollinger Band');
+  // --- EMA Alignment (20 pts) ---
+  if (ema20Val && ema50Val && ema200Val) {
+    // Perfect bull: price > ema20 > ema50 > ema200
+    if (currentPrice > ema20Val && ema20Val > ema50Val && ema50Val > ema200Val) {
+      emaPoints = 20;
+      reasonParts.bullish.push(
+        `Full bullish EMA alignment: price (${currentPrice.toFixed(5)}) > EMA20 (${ema20Val.toFixed(5)}) > EMA50 (${ema50Val.toFixed(5)}) > EMA200 (${ema200Val.toFixed(5)})`
+      );
+    } else if (currentPrice < ema20Val && ema20Val < ema50Val && ema50Val < ema200Val) {
+      emaPoints = -20;
+      reasonParts.bearish.push(
+        `Full bearish EMA alignment: price (${currentPrice.toFixed(5)}) < EMA20 (${ema20Val.toFixed(5)}) < EMA50 (${ema50Val.toFixed(5)}) < EMA200 (${ema200Val.toFixed(5)})`
+      );
+    } else if (currentPrice > ema20Val && ema20Val > ema50Val) {
+      emaPoints = 12;
+      reasonParts.bullish.push(
+        `Partial bull EMA alignment: price > EMA20 (${ema20Val.toFixed(5)}) > EMA50 (${ema50Val.toFixed(5)}), EMA200 at ${ema200Val.toFixed(5)}`
+      );
+    } else if (currentPrice < ema20Val && ema20Val < ema50Val) {
+      emaPoints = -12;
+      reasonParts.bearish.push(
+        `Partial bear EMA alignment: price < EMA20 (${ema20Val.toFixed(5)}) < EMA50 (${ema50Val.toFixed(5)}), EMA200 at ${ema200Val.toFixed(5)}`
+      );
+    } else if (currentPrice > ema50Val && ema50Val > ema200Val) {
+      emaPoints = 8;
+      reasonParts.bullish.push(
+        `Price above EMA50 (${ema50Val.toFixed(5)}) and EMA200 (${ema200Val.toFixed(5)}) — medium-term bullish`
+      );
+    } else if (currentPrice < ema50Val && ema50Val < ema200Val) {
+      emaPoints = -8;
+      reasonParts.bearish.push(
+        `Price below EMA50 (${ema50Val.toFixed(5)}) and EMA200 (${ema200Val.toFixed(5)}) — medium-term bearish`
+      );
+    }
+  } else if (ema20Val && ema50Val) {
+    if (currentPrice > ema20Val && ema20Val > ema50Val) {
+      emaPoints = 15;
+      reasonParts.bullish.push(
+        `Price > EMA20 (${ema20Val.toFixed(5)}) > EMA50 (${ema50Val.toFixed(5)}) — bullish short-term alignment`
+      );
+    } else if (currentPrice < ema20Val && ema20Val < ema50Val) {
+      emaPoints = -15;
+      reasonParts.bearish.push(
+        `Price < EMA20 (${ema20Val.toFixed(5)}) < EMA50 (${ema50Val.toFixed(5)}) — bearish short-term alignment`
+      );
     }
   }
 
-  // Market structure
-  if (structure.trend === 'uptrend') {
-    score += 2;
-    bullishReasons.push('market structure shows an uptrend with higher highs and higher lows');
-  } else if (structure.trend === 'downtrend') {
-    score -= 2;
-    bearishReasons.push('market structure shows a downtrend with lower highs and lower lows');
+  // --- S/R Bounce (20 pts) ---
+  const nearestSupport = srLevels.support.length > 0 ? srLevels.support[0] : null;
+  const nearestResistance = srLevels.resistance.length > 0 ? srLevels.resistance[0] : null;
+  const nearSupportThresh = 0.005; // 0.5%
+  const nearResistanceThresh = 0.005;
+
+  if (nearestSupport) {
+    const dist = Math.abs(currentPrice - nearestSupport.level) / currentPrice;
+    if (dist < nearSupportThresh) {
+      const pts = Math.min(20, 10 + nearestSupport.touchCount * 3);
+      srPoints = pts;
+      reasonParts.bullish.push(
+        `Price near key support level ${nearestSupport.level.toFixed(5)} (tested ${nearestSupport.touchCount}x)`
+      );
+    }
   }
 
-  // Support / Resistance proximity
-  const nearSupport = srLevels.support.some(
-    s => Math.abs(currentPrice - s) / currentPrice < 0.005
-  );
-  const nearResistance = srLevels.resistance.some(
-    r => Math.abs(currentPrice - r) / currentPrice < 0.005
-  );
-
-  if (nearSupport) {
-    score += 1;
-    bullishReasons.push('price is near a key support level');
-  }
-  if (nearResistance) {
-    score -= 1;
-    bearishReasons.push('price is near a key resistance level');
+  if (nearestResistance && srPoints === 0) {
+    const dist = Math.abs(currentPrice - nearestResistance.level) / currentPrice;
+    if (dist < nearResistanceThresh) {
+      const pts = Math.min(20, 10 + nearestResistance.touchCount * 3);
+      srPoints = -pts;
+      reasonParts.bearish.push(
+        `Price near key resistance level ${nearestResistance.level.toFixed(5)} (tested ${nearestResistance.touchCount}x)`
+      );
+    }
   }
 
-  // --- Map score to signal ---
-  // Max possible score: 14 (all bullish). Min: -14.
+  // --- Trend Strength (10 pts) ---
+  if (trendStrength >= 70) {
+    // Direction is determined by EMA/structure
+    const bullishTrend = structure.trend === 'uptrend' || emaPoints > 0;
+    if (bullishTrend) {
+      trendPoints = 10;
+      reasonParts.bullish.push(`Strong trend with score ${trendStrength}/100 supporting the bullish direction`);
+    } else {
+      trendPoints = -10;
+      reasonParts.bearish.push(`Strong trend with score ${trendStrength}/100 supporting the bearish direction`);
+    }
+  } else if (trendStrength >= 40) {
+    const bullishTrend = structure.trend === 'uptrend' || emaPoints > 0;
+    trendPoints = bullishTrend ? 5 : -5;
+  }
+  // < 40: sideways/weak, 0 pts
+
+  // --- Total score: sum of all weighted components ---
+  const rawScore = rsiPoints + macdPoints + emaPoints + srPoints + trendPoints;
+  // rawScore range: -100 to +100
+
+  // Confidence is the absolute percentage of max (100 pts)
+  const confidence = Math.min(100, Math.abs(rawScore));
+
+  // Determine direction
+  const isBullishBias = rawScore > 0;
+
+  // Map to signal based on confidence and direction
   let signal;
-  if (score >= 8) signal = SIGNALS.STRONG_BUY;
-  else if (score >= 4) signal = SIGNALS.BUY;
-  else if (score >= 1) signal = SIGNALS.HOLD;
-  else if (score <= -8) signal = SIGNALS.STRONG_SELL;
-  else if (score <= -4) signal = SIGNALS.SELL;
-  else if (score <= -1) signal = SIGNALS.HOLD;
-  else signal = SIGNALS.WAIT;
-
-  // Low trend strength overrides to WAIT
-  if (trendStrength < 20 && (signal === SIGNALS.BUY || signal === SIGNALS.SELL)) {
+  if (confidence > 80) {
+    signal = isBullishBias ? SIGNALS.STRONG_BUY : SIGNALS.STRONG_SELL;
+  } else if (confidence >= 60) {
+    signal = isBullishBias ? SIGNALS.BUY : SIGNALS.SELL;
+  } else if (confidence >= 40) {
+    signal = SIGNALS.HOLD;
+  } else if (confidence >= 20) {
+    signal = isBullishBias ? SIGNALS.HOLD : SIGNALS.HOLD;
+    // Weak conviction - hold regardless
+  } else {
+    // Very low confidence - mixed signals
     signal = SIGNALS.WAIT;
   }
 
-  // --- Confidence: how many of the 14 indicators align ---
-  const totalChecks = 14;
-  const isBullish = score > 0;
-  const alignedCount = isBullish ? bullishReasons.length : bearishReasons.length;
-  const confidence = Math.round((alignedCount / totalChecks) * 100);
-
-  // --- ATR-based price levels ---
-  const atr = atrVal || currentPrice * 0.005;
-  let entryZone, stopLoss, takeProfits, style;
+  // Refine: if components are split (some strongly bullish, some strongly bearish), use WAIT
+  const bullishComponentCount = [rsiPoints > 0, macdPoints > 0, emaPoints > 0, srPoints > 0, trendPoints > 0].filter(Boolean).length;
+  const bearishComponentCount = [rsiPoints < 0, macdPoints < 0, emaPoints < 0, srPoints < 0, trendPoints < 0].filter(Boolean).length;
+  const mixedSignals = bullishComponentCount >= 2 && bearishComponentCount >= 2 && confidence < 60;
+  if (mixedSignals) signal = SIGNALS.WAIT;
 
   const isBuy = signal === SIGNALS.STRONG_BUY || signal === SIGNALS.BUY;
   const isSell = signal === SIGNALS.STRONG_SELL || signal === SIGNALS.SELL;
 
+  // --- ATR-based price levels ---
+  let entryZone, stopLoss, trailingStop, takeProfits, style;
+
   if (isBuy) {
-    entryZone = { low: +(currentPrice - atr * 0.3).toFixed(5), high: +(currentPrice + atr * 0.2).toFixed(5) };
+    entryZone = {
+      low: +(currentPrice - atr * 0.3).toFixed(5),
+      high: +(currentPrice + atr * 0.3).toFixed(5),
+    };
     stopLoss = +(currentPrice - atr * 1.5).toFixed(5);
+    trailingStop = +(currentPrice - atr * 1.5).toFixed(5); // starts same as stop, trails up
     takeProfits = [
       +(currentPrice + atr * 1.5).toFixed(5),
       +(currentPrice + atr * 2.5).toFixed(5),
@@ -243,8 +369,12 @@ function generateSignal(symbol, candles, timeframe = '1h') {
     ];
     style = trendStrength > 60 ? 'Trend Follow' : 'Swing';
   } else if (isSell) {
-    entryZone = { low: +(currentPrice - atr * 0.2).toFixed(5), high: +(currentPrice + atr * 0.3).toFixed(5) };
+    entryZone = {
+      low: +(currentPrice - atr * 0.3).toFixed(5),
+      high: +(currentPrice + atr * 0.3).toFixed(5),
+    };
     stopLoss = +(currentPrice + atr * 1.5).toFixed(5);
+    trailingStop = +(currentPrice + atr * 1.5).toFixed(5);
     takeProfits = [
       +(currentPrice - atr * 1.5).toFixed(5),
       +(currentPrice - atr * 2.5).toFixed(5),
@@ -254,50 +384,72 @@ function generateSignal(symbol, candles, timeframe = '1h') {
   } else {
     entryZone = null;
     stopLoss = null;
+    trailingStop = null;
     takeProfits = [];
     style = 'N/A';
   }
 
-  // --- Risk/Reward ---
-  let riskReward = null;
-  if (stopLoss && takeProfits.length > 0) {
+  // --- Risk/Reward per TP level ---
+  let riskReward = { r1: null, r2: null, r3: null };
+  if (stopLoss !== null && takeProfits.length === 3) {
     const risk = Math.abs(currentPrice - stopLoss);
-    const reward = Math.abs(takeProfits[1] - currentPrice);
-    riskReward = risk > 0 ? +(reward / risk).toFixed(2) : null;
+    if (risk > 0) {
+      riskReward = {
+        r1: +(Math.abs(takeProfits[0] - currentPrice) / risk).toFixed(2),
+        r2: +(Math.abs(takeProfits[1] - currentPrice) / risk).toFixed(2),
+        r3: +(Math.abs(takeProfits[2] - currentPrice) / risk).toFixed(2),
+      };
+    }
   }
 
-  // --- Invalidation level ---
+  // --- Invalidation level: swing low for buys, swing high for sells ---
   let invalidatedAt = null;
-  if (isBuy && srLevels.support.length > 0) {
-    invalidatedAt = +(srLevels.support[0] - atr * 0.5).toFixed(5);
-  } else if (isSell && srLevels.resistance.length > 0) {
-    invalidatedAt = +(srLevels.resistance[0] + atr * 0.5).toFixed(5);
+  if (isBuy) {
+    const swingLow = findRecentSwingLow(lows, 20);
+    if (swingLow !== null) {
+      invalidatedAt = +(swingLow - atr * 0.3).toFixed(5);
+    }
+  } else if (isSell) {
+    const swingHigh = findRecentSwingHigh(highs, 20);
+    if (swingHigh !== null) {
+      invalidatedAt = +(swingHigh + atr * 0.3).toFixed(5);
+    }
   }
 
-  // --- Reason string ---
-  const isBuySignal = isBuy;
-  const direction = isBuySignal ? 'bullish' : isSell ? 'bearish' : 'neutral';
-  const primaryReasons = isBuySignal
-    ? bullishReasons.slice(0, 3)
-    : isSell
-    ? bearishReasons.slice(0, 3)
-    : [];
+  // --- Sharpe-like ratio: expectedReturn / volatility ---
+  let sharpelike = null;
+  const volatility = computeVolatility(closes, 20);
+  if (volatility && volatility > 0 && takeProfits.length > 0) {
+    // Expected return = distance to TP2 as fraction of current price
+    const expectedReturn = Math.abs(takeProfits[1] - currentPrice) / currentPrice;
+    sharpelike = +(expectedReturn / volatility).toFixed(2);
+  }
 
-  let reason = '';
-  if (signal === SIGNALS.WAIT || (!isBuy && !isSell)) {
+  // --- Reason string (detailed) ---
+  let reason;
+  if (signal === SIGNALS.WAIT || (!isBuy && !isSell && signal !== SIGNALS.HOLD)) {
     reason =
-      'No clear directional bias is apparent at this time. Indicators are mixed or the trend strength is low. ' +
-      'It may be worth waiting for a clearer setup before considering a position.';
+      `No clear directional bias at this time. Indicators are mixed (${bullishComponentCount} bullish vs ${bearishComponentCount} bearish components). ` +
+      `RSI: ${rsiVal !== null ? rsiVal.toFixed(1) : 'N/A'}. ` +
+      `MACD: ${macdVal !== null ? macdVal.toFixed(5) : 'N/A'} vs signal ${macdSignalVal !== null ? macdSignalVal.toFixed(5) : 'N/A'}. ` +
+      `Trend: ${structure.trend} (strength ${trendStrength}/100). ` +
+      `Waiting for a clearer setup before considering a position.`;
   } else {
-    const signalLabel = isBuySignal ? 'BUY' : 'SELL';
+    const dir = isBuy ? 'BUY' : isSell ? 'SELL' : 'HOLD';
+    const activeReasons = isBuy ? reasonParts.bullish : isSell ? reasonParts.bearish : [];
+    const sr = isBuy ? nearestSupport : nearestResistance;
+    const srText = sr
+      ? ` Nearest ${isBuy ? 'support' : 'resistance'} at ${sr.level.toFixed(5)} (${sr.touchCount} touches).`
+      : '';
+
     reason =
-      `A potential ${signalLabel} opportunity may be forming. ` +
-      (primaryReasons.length > 0
-        ? `This is suggested because ${primaryReasons.join(', and ')}. `
-        : '') +
-      `The current trend is identified as ${structure.trend} with a trend strength score of ${trendStrength}/100. ` +
-      `This analysis is probabilistic in nature and does not guarantee any particular outcome. ` +
-      `Always manage your risk carefully.`;
+      `${dir} signal with ${confidence}% confidence. ` +
+      (activeReasons.length > 0 ? activeReasons.join('; ') + '. ' : '') +
+      `RSI: ${rsiVal !== null ? rsiVal.toFixed(1) : 'N/A'}` +
+      (rsiVal !== null && rsiVal < 30 ? ' (oversold)' : rsiVal !== null && rsiVal > 70 ? ' (overbought)' : '') +
+      `. MACD line: ${macdVal !== null ? macdVal.toFixed(5) : 'N/A'}, signal: ${macdSignalVal !== null ? macdSignalVal.toFixed(5) : 'N/A'}, histogram: ${macdHistVal !== null ? macdHistVal.toFixed(5) : 'N/A'}.` +
+      `${srText} Trend: ${structure.trend} (strength ${trendStrength}/100). ATR: ${atr.toFixed(5)}.` +
+      ` This analysis is probabilistic and does not guarantee any outcome. Always manage your risk.`;
   }
 
   // --- Suggested risk ---
@@ -308,29 +460,33 @@ function generateSignal(symbol, candles, timeframe = '1h') {
     confidence,
     entryZone,
     stopLoss,
+    trailingStop,
     takeProfits,
     riskReward,
+    sharpelike,
     reason,
     invalidatedAt,
     suggestedRisk,
     style,
     timeframe,
     indicators: {
-      ema20: ema20Val ? +ema20Val.toFixed(5) : null,
-      ema50: ema50Val ? +ema50Val.toFixed(5) : null,
-      ema200: ema200Val ? +ema200Val.toFixed(5) : null,
-      rsi: rsiVal ? +rsiVal.toFixed(2) : null,
-      macd: macdVal ? +macdVal.toFixed(5) : null,
-      macdSignal: macdSignalVal ? +macdSignalVal.toFixed(5) : null,
-      macdHistogram: macdHistVal ? +macdHistVal.toFixed(5) : null,
-      bbUpper: bbUpper ? +bbUpper.toFixed(5) : null,
-      bbMiddle: bbMiddle ? +bbMiddle.toFixed(5) : null,
-      bbLower: bbLower ? +bbLower.toFixed(5) : null,
-      atr: atrVal ? +atrVal.toFixed(5) : null,
+      ema20: ema20Val !== null ? +ema20Val.toFixed(5) : null,
+      ema50: ema50Val !== null ? +ema50Val.toFixed(5) : null,
+      ema200: ema200Val !== null ? +ema200Val.toFixed(5) : null,
+      rsi: rsiVal !== null ? +rsiVal.toFixed(2) : null,
+      macd: macdVal !== null ? +macdVal.toFixed(5) : null,
+      macdSignal: macdSignalVal !== null ? +macdSignalVal.toFixed(5) : null,
+      macdHistogram: macdHistVal !== null ? +macdHistVal.toFixed(5) : null,
+      bbUpper: bbUpper !== null ? +bbUpper.toFixed(5) : null,
+      bbMiddle: bbMiddle !== null ? +bbMiddle.toFixed(5) : null,
+      bbLower: bbLower !== null ? +bbLower.toFixed(5) : null,
+      atr: atrVal !== null ? +atrVal.toFixed(5) : null,
       trendStrength,
       trend: structure.trend,
       support: srLevels.support,
       resistance: srLevels.resistance,
+      rawScore,
+      scoreBreakdown: { rsiPoints, macdPoints, emaPoints, srPoints, trendPoints },
     },
   };
 }

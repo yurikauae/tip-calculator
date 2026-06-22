@@ -29,6 +29,25 @@ const useStore = create(
   devtools(
     persist(
       (set, get) => ({
+        authToken: localStorage.getItem('market-signal-token'),
+        currentUser: (() => {
+          try {
+            return JSON.parse(localStorage.getItem('market-signal-user')) || null
+          } catch {
+            return null
+          }
+        })(),
+        setSession: (token, user) => {
+          localStorage.setItem('market-signal-token', token)
+          localStorage.setItem('market-signal-user', JSON.stringify(user))
+          set({ authToken: token, currentUser: user })
+        },
+        clearSession: () => {
+          localStorage.removeItem('market-signal-token')
+          localStorage.removeItem('market-signal-user')
+          set({ authToken: null, currentUser: null })
+        },
+
         // â”€â”€ Watchlist â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         watchlist: DEFAULT_WATCHLIST,
 

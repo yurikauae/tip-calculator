@@ -1,6 +1,14 @@
 const jwt = require('jsonwebtoken');
 const { getDb } = require('../db/database');
 
+function getJwtSecret() {
+  const secret = process.env.JWT_SECRET;
+  if (!secret && process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET must be configured in production');
+  }
+  return secret || 'development-only-secret';
+}
+
 function authMiddleware(req, res, next) {
   const authHeader = req.headers['authorization'];
 
@@ -16,7 +24,7 @@ function authMiddleware(req, res, next) {
   const token = parts[1];
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret');
+    const decoded = jwt.verify(token, getJwtSecret());
 
     const db = getDb();
     const user = db.get('users').find({ id: decoded.userId }).value();
@@ -48,3 +56,4 @@ function authMiddleware(req, res, next) {
 }
 
 module.exports = authMiddleware;
+module.exports.getJwtSecret = getJwtSecret;

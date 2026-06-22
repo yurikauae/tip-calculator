@@ -5,6 +5,18 @@ const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
 
+router.post('/data', authMiddleware, (req, res) => {
+  const symbols = Array.isArray(req.body.symbols) ? req.body.symbols.slice(0, 50) : [];
+  const items = symbols.map((symbol) => ({
+    symbol: String(symbol).toUpperCase(),
+    price: null,
+    change_pct: 0,
+    signal: 'NEUTRAL',
+    source: 'demo',
+  }));
+  res.json({ items, source: 'demo', warning: 'Watchlist prices require a configured market-data provider.' });
+});
+
 // GET /api/watchlist
 router.get('/', authMiddleware, (req, res, next) => {
   try {
